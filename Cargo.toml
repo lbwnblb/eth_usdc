@@ -7,3 +7,8 @@ edition = "2024"
 ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
 rand = "0.8"
 pkcs8 = { version = "0.10", features = ["pem", "std"] }
+base64 = "0.22"
+tokio = { version = "1", features = ["full"] }
+log = "0.4"
+log4rs = { version = "1.3", features = ["rolling_file_appender", "compound_policy", "time_trigger", "fixed_window_roller", "size_trigger", "json_encoder", "pattern_encoder", "threshold_filter"] }
+chrono = "0.4"

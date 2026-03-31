@@ -1,5 +1,16 @@
-mod ed25519;
+use log::{error, info, warn};
+use crate::utils::get_env;
 
-fn main() {
-    println!("Hello, world!");
+mod ed25519;
+mod utils;
+mod logger;
+
+#[tokio::main]
+async fn main() {
+    logger::init_logger("logs").expect("日志系统初始化失败");
+
+    info!("服务启动成功");
+    warn!("磁盘空间不足 20%");
+    error!("数据库连接超时");
+    info!("处理请求 #1024");
 }
