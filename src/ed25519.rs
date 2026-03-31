@@ -1,4 +1,5 @@
 use ed25519_dalek::{SigningKey, pkcs8::EncodePrivateKey, pkcs8::EncodePublicKey};
+use ed25519_dalek::pkcs8::spki::der::pem;
 use rand::rngs::OsRng;
 
 /// 生成 ED25519 密钥对，返回 (私钥PEM, 公钥PEM)
@@ -19,4 +20,15 @@ pub fn generate_ed25519_keypair() -> (String, String) {
         .expect("公钥编码失败");
 
     (private_pem, public_pem)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_generate_ed25519_keypair() {
+        let (private_pem, public_pem) = generate_ed25519_keypair();
+        println!("private_pem: {}", private_pem);
+        println!("public_pem: {}", public_pem);
+    }
 }
