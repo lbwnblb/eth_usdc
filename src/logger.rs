@@ -36,7 +36,7 @@ fn build_rolling_appender(
     // 每天触发一次滚动
     let time_trigger = TimeTrigger::new(
         TimeTriggerConfig {
-            interval: TimeTriggerInterval::Day,
+            interval: TimeTriggerInterval::Day(1),
             modulate: true,
             max_random_delay: 0,
         }
@@ -91,17 +91,17 @@ pub fn init_logger(log_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
             .build(
                 Root::builder()
                     .appender("console")
-                    .build(LevelFilter::Trace),
+                    .build(LevelFilter::Info),
             )?
     } else {
         // ── 非 dev 模式：输出到滚动文件 ───────────────────────────────────────
         std::fs::create_dir_all(format!("{log_dir}/archive"))?;
 
-        // all.log —— 全量（Trace+）
+        // all.log —— 全量（Info+）
         let (all_appender, all_filter) = build_rolling_appender(
             &format!("{log_dir}/all.log"),
             &format!("{log_dir}/archive/{{}}-all.log"),
-            LevelFilter::Trace,
+            LevelFilter::Info,
         );
         // info.log —— 仅 INFO（精确过滤）
         let (info_appender, _) = build_rolling_appender(
@@ -149,7 +149,7 @@ pub fn init_logger(log_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
                     .appender("info")
                     .appender("warn")
                     .appender("error")
-                    .build(LevelFilter::Trace),
+                    .build(LevelFilter::Info),
             )?
     };
 

@@ -25,12 +25,32 @@ pub fn generate_ed25519_keypair() -> (String, String) {
 
 
 static BINANCE_API_KEY: OnceCell<String> = OnceCell::const_new();
+static BINANCE_PRIVATE_KEY: OnceCell<String> = OnceCell::const_new();
 
 pub async fn get_api_key() -> &'static String {
     BINANCE_API_KEY
         .get_or_init(|| async {
-            std::env::var("binance_test_public_key")
-                .expect("环境变量 binance_test_public_key 未设置")
+            let env = crate::utils::get_env();
+            if env == crate::utils::TEST_ENV || env == crate::utils::DEV_ENV {
+                std::env::var("binance_test_public_key")
+                    .expect("环境变量 binance_test_public_key 未设置")
+            } else {
+                String::new()
+            }
+        })
+        .await
+}
+
+pub async fn get_private_key() -> &'static String {
+    BINANCE_PRIVATE_KEY
+        .get_or_init(|| async {
+            let env = crate::utils::get_env();
+            if env == crate::utils::TEST_ENV || env == crate::utils::DEV_ENV {
+                std::env::var("binance_test_private_key")
+                    .expect("环境变量 binance_test_private_key 未设置")
+            } else {
+                String::new()
+            }
         })
         .await
 }
