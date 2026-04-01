@@ -374,7 +374,7 @@ async fn connect_public_stream(write_arc: Arc<Mutex<WsWriteHalf>>, _api_key: Str
                             info!("Public stream received: {}", text);
                             match parse_book_ticker(&text) {
                                 Ok(book_ticker) => {
-                                    if order_buy(&write_arc, symbol, &book_ticker).await { continue; }
+                                    order_buy(&write_arc, symbol, &book_ticker).await;
                                     order_sell(&write_arc, symbol, &book_ticker).await;
                                 }
                                 Err(e) => {
