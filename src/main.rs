@@ -419,7 +419,7 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
 
     let order_manager = ORDER_MANAGER.lock().await;
     let ten_seconds_ms = 10 * 1000;
-    if order_manager.total_count >= 20 {
+    if order_manager.total_count >= 1 {
         info!("总仓位已达到20个，跳过此次买入请求，当前总仓位: {}", order_manager.total_count);
         return true;
     }
