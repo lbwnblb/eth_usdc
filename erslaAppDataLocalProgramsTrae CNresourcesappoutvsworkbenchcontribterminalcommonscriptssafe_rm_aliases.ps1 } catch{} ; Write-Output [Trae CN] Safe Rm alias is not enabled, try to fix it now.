@@ -236,3 +236,169 @@ warning: in the working copy of 'src/ws_api.rs', LF will be replaced by CRLF the
   "proc-macro2",[m
 [31m- "syn",[m
 [32m+[m[32m "syn 2.0.117",[m
+warning: in the working copy of 'src/main.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/ws_api.rs', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/src/logger.rs b/src/logger.rs[m
+[1mindex b9d5eb3..98be5f9 100644[m
+[1m--- a/src/logger.rs[m
+[1m+++ b/src/logger.rs[m
+[36m@@ -20,6 +20,64 @@[m [muse log4rs::append::rolling_file::policy::compound::trigger::time::{TimeTriggerC[m
+ // ── 日志格式 ──────────────────────────────────────────────────────────────────[m
+ const LOG_PATTERN: &str = "{d(%Y-%m-%d %H:%M:%S%.3f)} [{l:<5}] [{T}] {M}:{L} - {m}{n}";[m
+ [m
+[32m+[m[32m// ── 自定义日志宏，自动添加函数名称 ─────────────────────────────────────────────[m
+[32m+[m
+[32m+[m[32m#[macro_export][m
+[32m+[m[32mmacro_rules! trace {[m
+[32m+[m[32m    ($($arg:tt)*) => {{[m
+[32m+[m[32m        let func = $crate::function_name!();[m
+[32m+[m[32m        log::trace!("[{}] {}", func, format_args!($($arg)*));[m
+[32m+[m[32m    }};[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m#[macro_export][m
+[32m+[m[32mmacro_rules! debug {[m
+[32m+[m[32m    ($($arg:tt)*) => {{[m
+[32m+[m[32m        let func = $crate::function_name!();[m
+[32m+[m[32m        log::debug!("[{}] {}", func, format_args!($($arg)*));[m
+[32m+[m[32m    }};[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m#[macro_export][m
+[32m+[m[32mmacro_rules! info {[m
+[32m+[m[32m    ($($arg:tt)*) => {{[m
+[32m+[m[32m        let func = $crate::function_name!();[m
+[32m+[m[32m        log::info!("[{}] {}", func, format_args!($($arg)*));[m
+[32m+[m[32m    }};[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m#[macro_export][m
+[32m+[m[32mmacro_rules! warn {[m
+[32m+[m[32m    ($($arg:tt)*) => {{[m
+[32m+[m[32m        let func = $crate::function_name!();[m
+[32m+[m[32m        log::warn!("[{}] {}", func, format_args!($($arg)*));[m
+[32m+[m[32m    }};[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m#[macro_export][m
+[32m+[m[32mmacro_rules! error {[m
+[32m+[m[32m    ($($arg:tt)*) => {{[m
+[32m+[m[32m        let func = $crate::function_name!();[m
+[32m+[m[32m        log::error!("[{}] {}", func, format_args!($($arg)*));[m
+[32m+[m[32m    }};[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m#[macro_export][m
+[32m+[m[32mmacro_rules! function_name {[m
+[32m+[m[32m    () => {{[m
+[32m+[m[32m        struct F;[m
+[32m+[m[32m        fn type_name_of<T>(_: T) -> &'static str {[m
+[32m+[m[32m            std::any::type_name::<T>()[m
+[32m+[m[32m        }[m
+[32m+[m[32m        let name = type_name_of(F);[m
+[32m+[m[32m        let name = name.strip_suffix("::F").unwrap_or(name);[m
+[32m+[m[32m        let name = name.split("::{{closure}}").next().unwrap_or(name);[m
+[32m+[m[32m        name.rsplit("::").next().unwrap_or(name)[m
+[32m+[m[32m    }};[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m
+[32m+[m
+ /// 构建单个滚动文件 Appender[m
+ ///[m
+ /// - `base_path`    : 当前日志文件路径，如 "logs/all.log"[m
+[1mdiff --git a/src/main.rs b/src/main.rs[m
+[1mindex d480865..c8d3937 100644[m
+[1m--- a/src/main.rs[m
+[1m+++ b/src/main.rs[m
+[36m@@ -1,5 +1,4 @@[m
+ use futures_util::{SinkExt, StreamExt};[m
+[31m-use log::{error, info, warn};[m
+ use std::str::FromStr;[m
+ use std::sync::Arc;[m
+ use tokio::net::TcpStream;[m
+[36m@@ -7,20 +6,63 @@[m [muse tokio::spawn;[m
+ use tokio::sync::{Mutex, watch};[m
+ use tokio::time::{interval, Duration};[m
+ use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};[m
+[31m-use tokio_tungstenite::tungstenite::handshake::client::Response;[m
+ use lazy_static::lazy_static;[m
+ use rust_decimal::Decimal;[m
+ use rust_decimal_macros::dec;[m
+ use crate::logger::init_logger;[m
+[31m-use crate::utils::get_env;[m
+[31m-use crate::ws_api::{login, parse_login_response, is_login_success, check_response_id, create_user_data_stream_request, parse_user_data_stream_response, create_ping_user_data_stream_request, parse_ping_response, create_market_subscribe_request, create_account_balance_request, parse_account_balance_response, parse_book_ticker, create_order_request, parse_user_data_stream, UserDataStreamEvent};[m
+[32m+[m[32muse crate::utils::{calc_quantity, get_exchange_info, get_server_time};[m
+[32m+[m[32muse crate::ws_api::{login, parse_login_response, is_login_success, check_response_id, create_user_data_stream_request, parse_user_data_stream_response, create_ping_user_data_stream_request, parse_ping_response, create_market_subscribe_request, create_account_balance_request, parse_account_balance_response, parse_book_ticker, create_order_request, parse_user_data_stream, UserDataStreamEvent, parse_generic_response};[m
+ use crate::ed25519::{get_api_key, get_private_key};[m
+[31m-use crate::utils::get_server_time;[m
+[32m+[m
+[32m+[m[32m#[derive(Debug, Clone, PartialEq, Eq)][m
+[32m+[m[32mpub enum OrderSide {[m
+[32m+[m[32m    Buy,[m
+[32m+[m[32m    Sell,[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m#[derive(Debug, Clone, PartialEq, Eq)][m
+[32m+[m[32mpub enum OrderStatus {[m
+[32m+[m[32m    New,[m
+[32m+[m[32m    PartiallyFilled,[m
+[32m+[m[32m    Filled,[m
+[32m+[m[32m    Canceled,[m
+[32m+[m[32m    Rejected,[m
+[32m+[m[32m    Expired,[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m#[derive(Debug, Clone, PartialEq, Eq)][m
+[32m+[m[32mpub enum QuoteAsset {[m
+[32m+[m[32m    USDT,[m
+[32m+[m[32m    USDC,[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m#[derive(Debug, Clone)][m
+[32m+[m[32mpub struct Order {[m
+[32m+[m[32m    pub id: String,[m
+[32m+[m[32m    pub order_id: String,[m
+[32m+[m[32m    pub client_order_id: String,[m
+[32m+[m[32m    pub symbol: String,[m
+[32m+[m[32m    pub side: OrderSide,[m
+[32m+[m[32m    pub status: OrderStatus,[m
+[32m+[m[32m    pub price: Decimal,[m
+[32m+[m[32m    pub quantity: Decimal,[m
+[32m+[m[32m    pub filled_quantity: Decimal,[m
+[32m+[m[32m    pub quote_asset: QuoteAsset,[m
+[32m+[m[32m    pub create_time: u64,[m
+[32m+[m[32m    pub update_time: u64,[m
+[32m+[m[32m    pub deducted_amount: Decimal,[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mpub struct GlobalOrderManager {[m
+[32m+[m[32m    pub orders: Vec<Order>,[m
+[32m+[m[32m    pub total_count: usize,[m
+[32m+[m[32m}[m
+ [m
+ lazy_static! {[m
+     pub static ref USDC_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));[m
+     pub static ref USDT_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));[m
+     pub static ref ORDER_PLACED: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));[m
+[32m+[m[32m    pub static ref ORDER_MANAGER: Arc<Mutex<GlobalOrderManager>> = Arc::new(Mutex::new(GlobalOrderManager { orders: Vec::new(), total_count: 0 }));[m
+ }[m
+ [m
+ mod ed25519;[m
+[36m@@ -56,7 +98,7 @@[m [masync fn connect_user_data_stream(listen_key: &str) -> Result<(), Box<dyn std::e[m
+             Ok((ws_stream, _)) => {[m
+                 info!("User data stream connected successfully");[m
+                 let (mut write, mut read) = ws_stream.split();[m
+[31m-                [m
+[32m+[m
+                 let stream_name = format!("{}@ACCOUNT_UPDATE", listen_key);[m
+                 let subscribe_request = serde_json::json!({[m
+                     "method": "SUBSCRIBE",[m
+[36m@@ -72,12 +114,14 @@[m [masync fn connect_user_data_stream(listen_key: &str) -> Result<(), Box<dyn std::e[m
+                 while let Some(msg) = read.next().await {[m
+                     match msg {[m
+                         Ok(Message::Text(text)) => {[m
+[32m+[m[32m                            info!("connect_user_data_stream message: {}", text);[m
+                             match parse_user_data_stream(&text) {[m
+                                 Ok(event) => {[m
+                    

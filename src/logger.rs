@@ -20,6 +20,64 @@ use log4rs::append::rolling_file::policy::compound::trigger::time::{TimeTriggerC
 // ── 日志格式 ──────────────────────────────────────────────────────────────────
 const LOG_PATTERN: &str = "{d(%Y-%m-%d %H:%M:%S%.3f)} [{l:<5}] [{T}] {M}:{L} - {m}{n}";
 
+// ── 自定义日志宏，自动添加函数名称 ─────────────────────────────────────────────
+
+#[macro_export]
+macro_rules! trace {
+    ($($arg:tt)*) => {{
+        let func = $crate::function_name!();
+        log::trace!("[{}] {}", func, format_args!($($arg)*));
+    }};
+}
+
+#[macro_export]
+macro_rules! debug {
+    ($($arg:tt)*) => {{
+        let func = $crate::function_name!();
+        log::debug!("[{}] {}", func, format_args!($($arg)*));
+    }};
+}
+
+#[macro_export]
+macro_rules! info {
+    ($($arg:tt)*) => {{
+        let func = $crate::function_name!();
+        log::info!("[{}] {}", func, format_args!($($arg)*));
+    }};
+}
+
+#[macro_export]
+macro_rules! warn {
+    ($($arg:tt)*) => {{
+        let func = $crate::function_name!();
+        log::warn!("[{}] {}", func, format_args!($($arg)*));
+    }};
+}
+
+#[macro_export]
+macro_rules! error {
+    ($($arg:tt)*) => {{
+        let func = $crate::function_name!();
+        log::error!("[{}] {}", func, format_args!($($arg)*));
+    }};
+}
+
+#[macro_export]
+macro_rules! function_name {
+    () => {{
+        struct F;
+        fn type_name_of<T>(_: T) -> &'static str {
+            std::any::type_name::<T>()
+        }
+        let name = type_name_of(F);
+        let name = name.strip_suffix("::F").unwrap_or(name);
+        let name = name.split("::{{closure}}").next().unwrap_or(name);
+        name.rsplit("::").next().unwrap_or(name)
+    }};
+}
+
+
+
 /// 构建单个滚动文件 Appender
 ///
 /// - `base_path`    : 当前日志文件路径，如 "logs/all.log"

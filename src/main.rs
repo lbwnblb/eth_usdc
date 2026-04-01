@@ -1,5 +1,4 @@
 use futures_util::{SinkExt, StreamExt};
-use log::{error, info, warn};
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::net::TcpStream;
@@ -7,20 +6,63 @@ use tokio::spawn;
 use tokio::sync::{Mutex, watch};
 use tokio::time::{interval, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
-use tokio_tungstenite::tungstenite::handshake::client::Response;
 use lazy_static::lazy_static;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use crate::logger::init_logger;
-use crate::utils::get_env;
-use crate::ws_api::{login, parse_login_response, is_login_success, check_response_id, create_user_data_stream_request, parse_user_data_stream_response, create_ping_user_data_stream_request, parse_ping_response, create_market_subscribe_request, create_account_balance_request, parse_account_balance_response, parse_book_ticker, create_order_request, parse_user_data_stream, UserDataStreamEvent};
+use crate::utils::{calc_quantity, get_exchange_info, get_server_time};
+use crate::ws_api::{login, parse_login_response, is_login_success, check_response_id, create_user_data_stream_request, parse_user_data_stream_response, create_ping_user_data_stream_request, parse_ping_response, create_market_subscribe_request, create_account_balance_request, parse_account_balance_response, parse_book_ticker, create_order_request, parse_user_data_stream, UserDataStreamEvent, parse_generic_response, BookTickerStream};
 use crate::ed25519::{get_api_key, get_private_key};
-use crate::utils::get_server_time;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderSide {
+    Buy,
+    Sell,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderStatus {
+    New,
+    PartiallyFilled,
+    Filled,
+    Canceled,
+    Rejected,
+    Expired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuoteAsset {
+    USDT,
+    USDC,
+}
+
+#[derive(Debug, Clone)]
+pub struct Order {
+    pub id: String,
+    pub order_id: String,
+    pub client_order_id: String,
+    pub symbol: String,
+    pub side: OrderSide,
+    pub status: OrderStatus,
+    pub price: Decimal,
+    pub quantity: Decimal,
+    pub filled_quantity: Decimal,
+    pub quote_asset: QuoteAsset,
+    pub create_time: u64,
+    pub update_time: u64,
+    pub deducted_amount: Decimal,
+}
+
+pub struct GlobalOrderManager {
+    pub orders: Vec<Order>,
+    pub total_count: usize,
+    pub last_buy_order_time: u64,
+}
 
 lazy_static! {
     pub static ref USDC_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
     pub static ref USDT_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
-    pub static ref ORDER_PLACED: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    pub static ref ORDER_MANAGER: Arc<Mutex<GlobalOrderManager>> = Arc::new(Mutex::new(GlobalOrderManager { orders: Vec::new(), total_count: 0, last_buy_order_time: 0 }));
 }
 
 mod ed25519;
@@ -56,7 +98,7 @@ async fn connect_user_data_stream(listen_key: &str) -> Result<(), Box<dyn std::e
             Ok((ws_stream, _)) => {
                 info!("User data stream connected successfully");
                 let (mut write, mut read) = ws_stream.split();
-                
+
                 let stream_name = format!("{}@ACCOUNT_UPDATE", listen_key);
                 let subscribe_request = serde_json::json!({
                     "method": "SUBSCRIBE",
@@ -72,12 +114,14 @@ async fn connect_user_data_stream(listen_key: &str) -> Result<(), Box<dyn std::e
                 while let Some(msg) = read.next().await {
                     match msg {
                         Ok(Message::Text(text)) => {
+                            info!("connect_user_data_stream message: {}", text);
                             match parse_user_data_stream(&text) {
                                 Ok(event) => {
                                     match event {
                                         UserDataStreamEvent::OrderTradeUpdate(update) => {
-                                            info!("订单交易更新 - 订单ID: {}, 状态: {}, 交易对: {}, 方向: {}, 价格: {}, 已成交: {}, 手续费: {} {}",
+                                            info!("订单交易更新 - 订单ID: {}, 用户自定义订单号: {}, 状态: {}, 交易对: {}, 方向: {}, 价格: {}, 已成交: {}, 手续费: {} {}",
                                                 update.data.order.order_id,
+                                                update.data.order.client_order_id,
                                                 update.data.order.order_status,
                                                 update.data.order.symbol,
                                                 update.data.order.side,
@@ -86,16 +130,57 @@ async fn connect_user_data_stream(listen_key: &str) -> Result<(), Box<dyn std::e
                                                 update.data.order.commission,
                                                 update.data.order.commission_asset.as_deref().unwrap_or("")
                                             );
+                                            
+                                            let client_order_id = &update.data.order.client_order_id;
+                                            let mut order_manager = ORDER_MANAGER.lock().await;
+                                            if let Some(order) = order_manager.orders.iter_mut().find(|o| o.client_order_id == *client_order_id) {
+                                                order.order_id = update.data.order.order_id.to_string();
+                                                
+                                                match update.data.order.order_status.as_str() {
+                                                    "NEW" => order.status = OrderStatus::New,
+                                                    "PARTIALLY_FILLED" => order.status = OrderStatus::PartiallyFilled,
+                                                    "FILLED" => order.status = OrderStatus::Filled,
+                                                    "CANCELED" => order.status = OrderStatus::Canceled,
+                                                    "REJECTED" => order.status = OrderStatus::Rejected,
+                                                    "EXPIRED" => order.status = OrderStatus::Expired,
+                                                    _ => {}
+                                                }
+                                                
+                                                if let Ok(filled_qty) = Decimal::from_str(&update.data.order.filled_accumulated_qty) {
+                                                    order.filled_quantity = filled_qty;
+                                                }
+                                                
+                                                order.update_time = update.data.order.transaction_time;
+                                                
+                                                info!("已更新全局订单 - 自定义订单号: {}, 状态: {:?}, 已成交: {}", 
+                                                    client_order_id, order.status, order.filled_quantity);
+                                            }
                                         }
                                         UserDataStreamEvent::TradeLite(trade) => {
-                                            info!("交易信息 - 订单ID: {}, 交易对: {}, 方向: {}, 价格: {}, 成交量: {}, 交易ID: {}",
+                                            info!("交易信息 - 订单ID: {}, 交易对: {}, 方向: {}, 价格: {}, 成交量: {}, 交易ID: {}, 自定义订单号: {}",
                                                 trade.data.order_id,
                                                 trade.data.symbol,
                                                 trade.data.side,
                                                 trade.data.price,
                                                 trade.data.last_filled_qty,
-                                                trade.data.trade_id
+                                                trade.data.trade_id,
+                                                trade.data.client_order_id
                                             );
+                                            
+                                            let client_order_id = &trade.data.client_order_id;
+                                            let mut order_manager = ORDER_MANAGER.lock().await;
+                                            if let Some(order) = order_manager.orders.iter_mut().find(|o| o.client_order_id == *client_order_id) {
+                                                order.order_id = trade.data.order_id.to_string();
+                                                
+                                                if let Ok(filled_qty) = Decimal::from_str(&trade.data.last_filled_qty) {
+                                                    order.filled_quantity += filled_qty;
+                                                }
+                                                
+                                                order.update_time = trade.data.transaction_time;
+                                                
+                                                info!("已更新全局订单(TradeLite) - 自定义订单号: {}, 已成交: {}", 
+                                                    client_order_id, order.filled_quantity);
+                                            }
                                         }
                                         UserDataStreamEvent::AccountUpdate(update) => {
                                             info!("账户更新 - 原因: {}", update.data.account.reason);
@@ -105,6 +190,30 @@ async fn connect_user_data_stream(listen_key: &str) -> Result<(), Box<dyn std::e
                                                     balance.wallet_balance,
                                                     balance.cross_wallet_balance
                                                 );
+                                                if balance.asset.to_lowercase() == "usdc" {
+                                                    match Decimal::from_str(&balance.cross_wallet_balance) {
+                                                        Ok(decimal_balance) => {
+                                                            let mut usdc_balance = USDC_AVAILABLE_BALANCE.lock().await;
+                                                            *usdc_balance = decimal_balance;
+                                                            info!("更新 USDC 可用余额: {}", decimal_balance);
+                                                        }
+                                                        Err(e) => {
+                                                            error!("解析 USDC 余额失败: {}", e);
+                                                        }
+                                                    }
+                                                }
+                                                if balance.asset.to_lowercase() == "usdt" {
+                                                    match Decimal::from_str(&balance.cross_wallet_balance) {
+                                                        Ok(decimal_balance) => {
+                                                            let mut usdt_balance = USDT_AVAILABLE_BALANCE.lock().await;
+                                                            *usdt_balance = decimal_balance;
+                                                            info!("更新 USDT 可用余额: {}", decimal_balance);
+                                                        }
+                                                        Err(e) => {
+                                                            error!("解析 USDT 余额失败: {}", e);
+                                                        }
+                                                    }
+                                                }
                                             }
                                             for position in &update.data.account.positions {
                                                 info!("  持仓: {}, 数量: {}, 入场价: {}, 未实现盈亏: {}",
@@ -165,8 +274,8 @@ async fn connect_market_stream() -> Result<(), Box<dyn std::error::Error>> {
 
                 while let Some(msg) = read.next().await {
                     match msg {
-                        Ok(Message::Text(text)) => {
-                            // info!("Market stream received: {}", text);
+                        Ok(Message::Text(_text)) => {
+                            // info!("Market stream received: {}", _text);
                         }
                         Ok(Message::Close(_)) => {
                             warn!("Market stream closed by server");
@@ -190,7 +299,7 @@ async fn connect_market_stream() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn connect_public_stream(write_arc: Arc<Mutex<WsWriteHalf>>, api_key: String, private_key: String) -> Result<(), Box<dyn std::error::Error>> {
+async fn connect_public_stream(write_arc: Arc<Mutex<WsWriteHalf>>, _api_key: String, _private_key: String) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let ws_url = utils::get_ws_public_baseurl();
         info!("Connecting to public stream: {}", ws_url);
@@ -212,59 +321,11 @@ async fn connect_public_stream(write_arc: Arc<Mutex<WsWriteHalf>>, api_key: Stri
                 while let Some(msg) = read.next().await {
                     match msg {
                         Ok(Message::Text(text)) => {
-                            // info!("Public stream received: {}", text);
+                            info!("Public stream received: {}", text);
                             match parse_book_ticker(&text) {
                                 Ok(book_ticker) => {
-                                    // info!("Parsed BookTicker: stream={}, symbol={}, bid_price={}, bid_qty={}, ask_price={}, ask_qty={}",
-                                    //     book_ticker.stream,
-                                    //     book_ticker.data.symbol,
-                                    //     book_ticker.data.best_bid_price,
-                                    //     book_ticker.data.best_bid_qty,
-                                    //     book_ticker.data.best_ask_price,
-                                    //     book_ticker.data.best_ask_qty
-                                    // );
-                                    
-                                    let mut order_placed = ORDER_PLACED.lock().await;
-                                    if !*order_placed {
-                                        info!("Preparing to place order...");
-                                        
-                                        let bid_price = match book_ticker.data.best_bid_price.parse::<f64>() {
-                                            Ok(p) => p,
-                                            Err(e) => {
-                                                error!("Failed to parse bid price: {}", e);
-                                                continue;
-                                            }
-                                        };
-                                        
-                                        let timestamp = match get_server_time().await {
-                                            Ok(t) => t,
-                                            Err(e) => {
-                                                error!("Failed to get server time: {}", e);
-                                                continue;
-                                            }
-                                        };
-                                        
-                                        let order_request = create_order_request(
-                                            "place_order",
-                                            symbol,
-                                            "BUY",
-                                            "LIMIT",
-                                            0.01,
-                                            Some(bid_price),
-                                            Some("GTX"),
-                                            None,
-                                            timestamp
-                                        );
-                                        
-                                        info!("Sending order request: {}", order_request);
-                                        let mut write_guard = write_arc.lock().await;
-                                        if let Err(e) = write_guard.send(Message::Text(order_request)).await {
-                                            error!("Failed to send order request: {}", e);
-                                        } else {
-                                            *order_placed = true;
-                                            info!("Order request sent successfully!");
-                                        }
-                                    }
+                                    if order_buy(&write_arc, symbol, &book_ticker).await { continue; }
+                                    order_sell(&write_arc, symbol, &book_ticker).await;
                                 }
                                 Err(e) => {
                                     error!("Failed to parse BookTicker: {}", e);
@@ -293,6 +354,253 @@ async fn connect_public_stream(write_arc: Arc<Mutex<WsWriteHalf>>, api_key: Stri
     }
 }
 
+async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticker: &BookTickerStream) -> bool {
+    info!("Preparing to place order...");
+
+    let bid_price = match Decimal::from_str(&book_ticker.data.best_bid_price) {
+        Ok(p) => p,
+        Err(e) => {
+            error!("Failed to parse bid price: {}", e);
+            return true;
+        }
+    };
+
+    let timestamp = book_ticker.data.event_time as i64;
+
+    let order_manager = ORDER_MANAGER.lock().await;
+    let ten_seconds_ms = 10 * 1000;
+    if order_manager.last_buy_order_time != 0 && (timestamp as u64) - order_manager.last_buy_order_time < ten_seconds_ms {
+        info!("距离上次买入订单不足10秒，跳过此次请求，距离下次可请求还需 {} 毫秒", ten_seconds_ms - ((timestamp as u64) - order_manager.last_buy_order_time));
+        return true;
+    }
+    drop(order_manager);
+
+    let quote_asset = if symbol.ends_with("USDC") {
+        QuoteAsset::USDC
+    } else {
+        QuoteAsset::USDT
+    };
+
+    let (balance_to_use, balance_name) = match quote_asset {
+        QuoteAsset::USDT => {
+            let usdt_balance = USDT_AVAILABLE_BALANCE.lock().await;
+            let usdt_to_use = *usdt_balance / dec!(10);
+            drop(usdt_balance);
+            (usdt_to_use, "USDT")
+        },
+        QuoteAsset::USDC => {
+            let usdc_balance = USDC_AVAILABLE_BALANCE.lock().await;
+            let usdc_to_use = *usdc_balance / dec!(10);
+            drop(usdc_balance);
+            (usdc_to_use, "USDC")
+        },
+    };
+
+    if balance_to_use <= dec!(0.0) {
+        error!("Insufficient {} balance to place order", balance_name);
+        return true;
+    }
+
+    let exchange_info = match get_exchange_info().await {
+        Ok(info) => info,
+        Err(e) => {
+            error!("Failed to get exchange info: {}", e);
+            return true;
+        }
+    };
+
+    let symbol_info = match exchange_info.symbols.into_iter().find(|s| s.symbol == symbol) {
+        Some(info) => info,
+        None => {
+            error!("Symbol {} not found in exchange info", symbol);
+            return true;
+        }
+    };
+
+    let quantity = match calc_quantity(
+        &balance_to_use.to_string(),
+        symbol,
+        &bid_price.to_string(),
+        &symbol_info
+    ) {
+        Ok(qty) => qty,
+        Err(e) => {
+            error!("Failed to calculate quantity: {}", e);
+            return true;
+        }
+    };
+
+    let quantity_f64 = match quantity.to_string().parse::<f64>() {
+        Ok(q) => q,
+        Err(e) => {
+            error!("Failed to parse quantity to f64: {}", e);
+            return true;
+        }
+    };
+
+    let bid_price_f64 = match bid_price.to_string().parse::<f64>() {
+        Ok(p) => p,
+        Err(e) => {
+            error!("Failed to parse bid price to f64: {}", e);
+            return true;
+        }
+    };
+
+    info!("Calculated order quantity: {} (using {:.2} {}, price: {})", quantity_f64, balance_to_use, balance_name, bid_price);
+
+    let new_client_order_id = format!("{}_{}_{}", symbol, "BUY", timestamp);
+    info!("Generated newClientOrderId: {}", new_client_order_id);
+
+    let request_id = format!("place_order_buy_{}", timestamp);
+    let order_request = create_order_request(
+        &request_id,
+        symbol,
+        "BUY",
+        "LIMIT",
+        quantity_f64,
+        Some(bid_price_f64),
+        Some("GTX"),
+        None,
+        Some(&new_client_order_id),
+        timestamp
+    );
+
+    let order = Order {
+        id: request_id,
+        order_id: String::new(),
+        client_order_id: new_client_order_id.clone(),
+        symbol: symbol.to_string(),
+        side: OrderSide::Buy,
+        status: OrderStatus::New,
+        price: bid_price,
+        quantity: quantity.clone(),
+        filled_quantity: dec!(0.0),
+        quote_asset: quote_asset.clone(),
+        create_time: timestamp as u64,
+        update_time: timestamp as u64,
+        deducted_amount: balance_to_use,
+    };
+    let mut order_manager = ORDER_MANAGER.lock().await;
+    order_manager.orders.push(order);
+    order_manager.total_count += 1;
+    info!("Order saved to global array, total orders: {}", order_manager.total_count);
+    drop(order_manager);
+
+    info!("Sending order request: {}", order_request);
+    let send_result = {
+        let mut write_guard = write_arc.lock().await;
+        write_guard.send(Message::Text(order_request)).await
+    };
+
+    let mut send_success = false;
+    if let Err(e) = send_result {
+        error!("Failed to send order request: {}", e);
+    } else {
+        info!("Order request sent successfully!");
+        send_success = true;
+    }
+
+    if send_success {
+        let mut order_manager = ORDER_MANAGER.lock().await;
+        order_manager.last_buy_order_time = timestamp as u64;
+        info!("已更新 last_buy_order_time 为 {}", timestamp);
+        drop(order_manager);
+
+        match quote_asset {
+            QuoteAsset::USDT => {
+                let mut usdt_balance = USDT_AVAILABLE_BALANCE.lock().await;
+                *usdt_balance -= balance_to_use;
+                info!("已扣除 {} USDT，剩余可用余额: {}", balance_to_use, usdt_balance);
+            },
+            QuoteAsset::USDC => {
+                let mut usdc_balance = USDC_AVAILABLE_BALANCE.lock().await;
+                *usdc_balance -= balance_to_use;
+                info!("已扣除 {} USDC，剩余可用余额: {}", balance_to_use, usdc_balance);
+            },
+        }
+    }
+
+    false
+}
+
+async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticker: &BookTickerStream) -> bool {
+    let order_manager = ORDER_MANAGER.lock().await;
+    
+    let mut found_order: Option<(Decimal, Decimal)> = None;
+    
+    for order in &order_manager.orders {
+        if order.status == OrderStatus::Filled && order.side == OrderSide::Buy {
+            let ask_price = match Decimal::from_str(&book_ticker.data.best_ask_price) {
+                Ok(p) => p,
+                Err(e) => {
+                    error!("Failed to parse ask price: {}", e);
+                    continue;
+                }
+            };
+            
+            if ask_price > order.price {
+                found_order = Some((ask_price, order.filled_quantity));
+                break;
+            }
+        }
+    }
+    
+    drop(order_manager);
+    
+    if let Some((ask_price, filled_quantity)) = found_order {
+        let timestamp = book_ticker.data.event_time as i64;
+        
+        let new_client_order_id = format!("{}_{}_{}_sell", symbol, "SELL", timestamp);
+        info!("Generated newClientOrderId for sell: {}", new_client_order_id);
+        
+        let quantity_f64 = match filled_quantity.to_string().parse::<f64>() {
+            Ok(q) => q,
+            Err(e) => {
+                error!("Failed to parse filled quantity to f64: {}", e);
+                return false;
+            }
+        };
+        
+        let ask_price_f64 = match ask_price.to_string().parse::<f64>() {
+            Ok(p) => p,
+            Err(e) => {
+                error!("Failed to parse ask price to f64: {}", e);
+                return false;
+            }
+        };
+        
+        let request_id = format!("place_order_sell_{}", timestamp);
+        let order_request = create_order_request(
+            &request_id,
+            symbol,
+            "SELL",
+            "LIMIT",
+            quantity_f64,
+            Some(ask_price_f64),
+            Some("GTX"),
+            None,
+            Some(&new_client_order_id),
+            timestamp
+        );
+        
+        info!("Sending sell order request: {}", order_request);
+        let send_result = {
+            let mut write_guard = write_arc.lock().await;
+            write_guard.send(Message::Text(order_request)).await
+        };
+        
+        if let Err(e) = send_result {
+            error!("Failed to send sell order request: {}", e);
+        } else {
+            info!("Sell order request sent successfully!");
+        }
+        
+        return true;
+    }
+    
+    false
+}
+
 async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>, String, String), Box<dyn std::error::Error>> {
     let ws_url = utils::get_ws_api_baseurl();
     info!("Connecting to WebSocket: {}", ws_url);
@@ -318,7 +626,7 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>, String,
             let timestamp = get_server_time().await?;
             let auth_id = "login";
             let auth_request = login(&auth_id, &api_key_for_login, &private_key_for_login, timestamp);
-            
+
             info!("Sending auth request: {}", auth_request);
             {
                 let mut write_guard = write_arc.lock().await;
@@ -336,14 +644,14 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>, String,
             let api_key_clone_for_read = api_key.clone();
             let private_key_clone_for_return = private_key.clone();
             let private_key_clone_for_read = private_key.clone();
-            
+
             let _ = spawn(async move {
                 let mut ping_interval = interval(Duration::from_secs(59 * 60));
                 ping_interval.tick().await;
-                
+
                 loop {
                     ping_interval.tick().await;
-                    
+
                     let key = listen_key_clone.lock().await;
                     if !key.is_empty() {
                         let ping_request = create_ping_user_data_stream_request(ping_id, &api_key_clone_for_ping);
@@ -374,7 +682,7 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>, String,
                                                 error!("Failed to send user data stream start request: {}", e);
                                                 break;
                                             }
-                                            
+
                                             let balance_timestamp = get_server_time().await.unwrap_or(timestamp);
                                             let account_balance_request = create_account_balance_request(account_balance_id, &api_key_clone_for_read, &private_key_clone_for_read, balance_timestamp);
                                             info!("Sending account balance request: {}", account_balance_request);
@@ -474,6 +782,47 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>, String,
                                     }
                                 }
                             }
+
+                            match parse_generic_response(&text) {
+                                Ok(resp) => {
+                                    if resp.id.starts_with("place_order_buy_") {
+                                        info!("收到订单响应，ID: {}, 状态: {}", resp.id, resp.status);
+                                        if resp.status != 200 {
+                                            warn!("订单请求失败，ID: {}, 错误: {:?}", resp.id, resp.error);
+                                            let mut order_manager = ORDER_MANAGER.lock().await;
+                                            
+                                            if let Some(order) = order_manager.orders.iter().find(|o| o.id == resp.id) {
+                                                let deducted_amount = order.deducted_amount;
+                                                let quote_asset = order.quote_asset.clone();
+                                                
+                                                if order.side == OrderSide::Buy {
+                                                    match quote_asset {
+                                                        QuoteAsset::USDT => {
+                                                            let mut usdt_balance = USDT_AVAILABLE_BALANCE.lock().await;
+                                                            *usdt_balance += deducted_amount;
+                                                            info!("已恢复 {} USDT 到可用余额，剩余: {}", deducted_amount, usdt_balance);
+                                                        },
+                                                        QuoteAsset::USDC => {
+                                                            let mut usdc_balance = USDC_AVAILABLE_BALANCE.lock().await;
+                                                            *usdc_balance += deducted_amount;
+                                                            info!("已恢复 {} USDC 到可用余额，剩余: {}", deducted_amount, usdc_balance);
+                                                        },
+                                                    }
+                                                }
+                                            }
+                                            
+                                            let initial_len = order_manager.orders.len();
+                                            order_manager.orders.retain(|order| order.id != resp.id);
+                                            let removed = initial_len - order_manager.orders.len();
+                                            if removed > 0 {
+                                                order_manager.total_count -= removed;
+                                                info!("已从 ORDER_MANAGER 中删除失败的订单，ID: {}, 剩余订单总数: {}", resp.id, order_manager.total_count);
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(_) => {}
+                            }
                         }
                         Ok(Message::Close(_)) => {
                             warn!("WebSocket closed by server");
@@ -493,12 +842,12 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>, String,
                     }
                 }
             });
-            
+
             info!("Waiting for listenKey...");
             listen_key_rx.changed().await?;
             let key = listen_key_rx.borrow().clone();
             info!("Received listenKey: {}", key);
-            
+
             Ok((key, write_arc_clone, api_key_clone_for_return, private_key_clone_for_return))
         }
         Err(e) => {
@@ -514,20 +863,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (listen_key, write_arc, api_key, private_key) = connect_websocket().await?;
     info!("Final listenKey received: {}", listen_key);
     info!("WebSocket write_arc received");
-    
+
+
+    spawn(async move {
+        if let Err(e) = connect_market_stream().await {
+            error!("Market stream connection failed: {}", e);
+        }
+    });
     let listen_key_clone = listen_key.clone();
     spawn(async move {
         if let Err(e) = connect_user_data_stream(&listen_key_clone).await {
             error!("User data stream connection failed: {}", e);
         }
     });
-    
-    spawn(async move {
-        if let Err(e) = connect_market_stream().await {
-            error!("Market stream connection failed: {}", e);
-        }
-    });
-    
+
     if let Err(e) = connect_public_stream(write_arc, api_key, private_key).await {
         error!("Public stream connection failed: {}", e);
     }

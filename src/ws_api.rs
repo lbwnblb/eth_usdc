@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
-use ed25519_dalek::{Signature, Signer, SigningKey};
+use ed25519_dalek::{Signer, SigningKey};
 use hex;
 use serde::{Deserialize, Serialize};
 
@@ -235,6 +235,7 @@ pub fn create_order_request(
     price: Option<f64>,
     time_in_force: Option<&str>,
     position_side: Option<&str>,
+    new_client_order_id: Option<&str>,
     timestamp: i64,
 ) -> String {
     let mut params = serde_json::json!({
@@ -255,6 +256,10 @@ pub fn create_order_request(
 
     if let Some(ps) = position_side {
         params["positionSide"] = ps.into();
+    }
+
+    if let Some(ncoid) = new_client_order_id {
+        params["newClientOrderId"] = ncoid.into();
     }
 
     let json = serde_json::json!({
@@ -464,6 +469,19 @@ pub enum UserDataStreamEvent {
     TradeLite(TradeLiteStream),
     AccountUpdate(AccountUpdateStream),
     Unknown(serde_json::Value),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GenericResponse {
+    pub id: String,
+    pub status: i32,
+    pub result: Option<serde_json::Value>,
+    pub rateLimits: Option<Vec<RateLimit>>,
+    pub error: Option<serde_json::Value>,
+}
+
+pub fn parse_generic_response(response: &str) -> Result<GenericResponse, String> {
+    serde_json::from_str(response).map_err(|e| format!("JSON解析失败: {}", e))
 }
 
 pub fn parse_user_data_stream(response: &str) -> Result<UserDataStreamEvent, String> {
