@@ -11,7 +11,7 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use crate::logger::init_logger;
 use crate::utils::{calc_quantity, get_exchange_info, get_server_time};
-use crate::ws_api::{login, parse_login_response, is_login_success, check_response_id, create_user_data_stream_request, parse_user_data_stream_response, create_ping_user_data_stream_request, parse_ping_response, create_market_subscribe_request, create_account_balance_request, parse_account_balance_response, parse_book_ticker, create_order_request, parse_user_data_stream, UserDataStreamEvent, parse_generic_response, BookTickerStream};
+use crate::ws_api::{login, parse_login_response, is_login_success, check_response_id, create_user_data_stream_request, parse_user_data_stream_response, create_ping_user_data_stream_request, parse_ping_response, create_market_subscribe_request, create_account_balance_request, parse_account_balance_response, parse_book_ticker, create_order_request, parse_user_data_stream, UserDataStreamEvent, parse_generic_response, BookTickerStream, OrderTradeUpdateStream, TradeLiteStream};
 use crate::ed25519::{get_api_key, get_private_key};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +76,109 @@ mod ws_api;
 type WsReadHalf = futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>;
 type WsWriteHalf = futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 
+async fn handle_order_trade_update(update: OrderTradeUpdateStream) {
+    info!("订单交易更新 - 订单ID: {}, 用户自定义订单号: {}, 状态: {}, 交易对: {}, 方向: {}, 价格: {}, 已成交: {}, 手续费: {} {}",
+        update.data.order.order_id,
+        update.data.order.client_order_id,
+        update.data.order.order_status,
+        update.data.order.symbol,
+        update.data.order.side,
+        update.data.order.price,
+        update.data.order.filled_accumulated_qty,
+        update.data.order.commission,
+        update.data.order.commission_asset.as_deref().unwrap_or("")
+    );
+    
+    let client_order_id = &update.data.order.client_order_id;
+    let mut order_manager = ORDER_MANAGER.lock().await;
+    
+    let is_sell_order = update.data.order.side.to_uppercase() == "SELL";
+    let is_filled = update.data.order.order_status.as_str() == "FILLED";
+    
+    if is_sell_order && is_filled {
+        let mut related_buy_client_id = None;
+        if let Some(sell_order) = order_manager.orders.iter().find(|o| o.client_order_id == *client_order_id) {
+            related_buy_client_id = sell_order.related_buy_order_client_id.clone();
+        }
+        
+        if let Some(buy_client_id) = related_buy_client_id {
+            let initial_len = order_manager.orders.len();
+            order_manager.orders.retain(|o| o.client_order_id != *client_order_id && o.client_order_id != buy_client_id);
+            let removed = initial_len - order_manager.orders.len();
+            if removed > 0 {
+                order_manager.total_count -= 1;
+                info!("卖出订单全部成交，已剔除买单(自定义ID: {})和卖单(自定义ID: {})，总仓位减1，当前总仓位: {}", buy_client_id, client_order_id, order_manager.total_count);
+            }
+        }
+    } else {
+        if let Some(order) = order_manager.orders.iter_mut().find(|o| o.client_order_id == *client_order_id) {
+            order.order_id = update.data.order.order_id.to_string();
+            
+            match update.data.order.order_status.as_str() {
+                "NEW" => order.status = OrderStatus::New,
+                "PARTIALLY_FILLED" => order.status = OrderStatus::PartiallyFilled,
+                "FILLED" => order.status = OrderStatus::Filled,
+                "CANCELED" => order.status = OrderStatus::Canceled,
+                "REJECTED" => order.status = OrderStatus::Rejected,
+                "EXPIRED" => order.status = OrderStatus::Expired,
+                _ => {}
+            }
+            
+            if let Ok(filled_qty) = Decimal::from_str(&update.data.order.filled_accumulated_qty) {
+                order.filled_quantity = filled_qty;
+            }
+            
+            order.update_time = update.data.order.transaction_time;
+            
+            info!("已更新全局订单 - 自定义订单号: {}, 状态: {:?}, 已成交: {}", 
+                client_order_id, order.status, order.filled_quantity);
+        }
+    }
+}
+
+async fn handle_trade_lite(trade: TradeLiteStream) {
+    info!("交易信息 - 订单ID: {}, 交易对: {}, 方向: {}, 价格: {}, 成交量: {}, 交易ID: {}, 自定义订单号: {}",
+        trade.data.order_id,
+        trade.data.symbol,
+        trade.data.side,
+        trade.data.price,
+        trade.data.last_filled_qty,
+        trade.data.trade_id,
+        trade.data.client_order_id
+    );
+    
+    let client_order_id = &trade.data.client_order_id;
+    let is_sell_order = trade.data.side.to_uppercase() == "SELL";
+    let mut order_manager = ORDER_MANAGER.lock().await;
+    
+    if let Some(order) = order_manager.orders.iter_mut().find(|o| o.client_order_id == *client_order_id) {
+        order.order_id = trade.data.order_id.to_string();
+        
+        if let Ok(filled_qty) = Decimal::from_str(&trade.data.last_filled_qty) {
+            order.filled_quantity += filled_qty;
+        }
+        
+        order.update_time = trade.data.transaction_time;
+        
+        info!("已更新全局订单(TradeLite) - 自定义订单号: {}, 已成交: {}", 
+            client_order_id, order.filled_quantity);
+        
+        if is_sell_order && order.filled_quantity >= order.quantity {
+            let related_buy_client_id = order.related_buy_order_client_id.clone();
+            
+            if let Some(buy_client_id) = related_buy_client_id {
+                let initial_len = order_manager.orders.len();
+                order_manager.orders.retain(|o| o.client_order_id != *client_order_id && o.client_order_id != buy_client_id);
+                let removed = initial_len - order_manager.orders.len();
+                if removed > 0 {
+                    order_manager.total_count -= 1;
+                    info!("卖出订单全部成交(TradeLite)，已剔除买单(自定义ID: {})和卖单(自定义ID: {})，总仓位减1，当前总仓位: {}", buy_client_id, client_order_id, order_manager.total_count);
+                }
+            }
+        }
+    }
+}
+
 async fn try_reconnect(
     ws_url: &str,
     write_arc: &Arc<Mutex<WsWriteHalf>>,
@@ -122,68 +225,10 @@ async fn connect_user_data_stream(listen_key: &str) -> Result<(), Box<dyn std::e
                                 Ok(event) => {
                                     match event {
                                         UserDataStreamEvent::OrderTradeUpdate(update) => {
-                                            info!("订单交易更新 - 订单ID: {}, 用户自定义订单号: {}, 状态: {}, 交易对: {}, 方向: {}, 价格: {}, 已成交: {}, 手续费: {} {}",
-                                                update.data.order.order_id,
-                                                update.data.order.client_order_id,
-                                                update.data.order.order_status,
-                                                update.data.order.symbol,
-                                                update.data.order.side,
-                                                update.data.order.price,
-                                                update.data.order.filled_accumulated_qty,
-                                                update.data.order.commission,
-                                                update.data.order.commission_asset.as_deref().unwrap_or("")
-                                            );
-                                            
-                                            let client_order_id = &update.data.order.client_order_id;
-                                            let mut order_manager = ORDER_MANAGER.lock().await;
-                                            if let Some(order) = order_manager.orders.iter_mut().find(|o| o.client_order_id == *client_order_id) {
-                                                order.order_id = update.data.order.order_id.to_string();
-                                                
-                                                match update.data.order.order_status.as_str() {
-                                                    "NEW" => order.status = OrderStatus::New,
-                                                    "PARTIALLY_FILLED" => order.status = OrderStatus::PartiallyFilled,
-                                                    "FILLED" => order.status = OrderStatus::Filled,
-                                                    "CANCELED" => order.status = OrderStatus::Canceled,
-                                                    "REJECTED" => order.status = OrderStatus::Rejected,
-                                                    "EXPIRED" => order.status = OrderStatus::Expired,
-                                                    _ => {}
-                                                }
-                                                
-                                                if let Ok(filled_qty) = Decimal::from_str(&update.data.order.filled_accumulated_qty) {
-                                                    order.filled_quantity = filled_qty;
-                                                }
-                                                
-                                                order.update_time = update.data.order.transaction_time;
-                                                
-                                                info!("已更新全局订单 - 自定义订单号: {}, 状态: {:?}, 已成交: {}", 
-                                                    client_order_id, order.status, order.filled_quantity);
-                                            }
+                                            handle_order_trade_update(update).await;
                                         }
                                         UserDataStreamEvent::TradeLite(trade) => {
-                                            info!("交易信息 - 订单ID: {}, 交易对: {}, 方向: {}, 价格: {}, 成交量: {}, 交易ID: {}, 自定义订单号: {}",
-                                                trade.data.order_id,
-                                                trade.data.symbol,
-                                                trade.data.side,
-                                                trade.data.price,
-                                                trade.data.last_filled_qty,
-                                                trade.data.trade_id,
-                                                trade.data.client_order_id
-                                            );
-                                            
-                                            let client_order_id = &trade.data.client_order_id;
-                                            let mut order_manager = ORDER_MANAGER.lock().await;
-                                            if let Some(order) = order_manager.orders.iter_mut().find(|o| o.client_order_id == *client_order_id) {
-                                                order.order_id = trade.data.order_id.to_string();
-                                                
-                                                if let Ok(filled_qty) = Decimal::from_str(&trade.data.last_filled_qty) {
-                                                    order.filled_quantity += filled_qty;
-                                                }
-                                                
-                                                order.update_time = trade.data.transaction_time;
-                                                
-                                                info!("已更新全局订单(TradeLite) - 自定义订单号: {}, 已成交: {}", 
-                                                    client_order_id, order.filled_quantity);
-                                            }
+                                            handle_trade_lite(trade).await;
                                         }
                                         UserDataStreamEvent::AccountUpdate(update) => {
                                             info!("账户更新 - 原因: {}", update.data.account.reason);
@@ -372,6 +417,10 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
 
     let order_manager = ORDER_MANAGER.lock().await;
     let ten_seconds_ms = 10 * 1000;
+    if order_manager.total_count >= 20 {
+        info!("总仓位已达到20个，跳过此次买入请求，当前总仓位: {}", order_manager.total_count);
+        return true;
+    }
     if order_manager.last_buy_order_time != 0 && (timestamp as u64) - order_manager.last_buy_order_time < ten_seconds_ms {
         info!("距离上次买入订单不足10秒，跳过此次请求，距离下次可请求还需 {} 毫秒", ten_seconds_ms - ((timestamp as u64) - order_manager.last_buy_order_time));
         return true;
@@ -864,6 +913,32 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>, String,
                                             if removed > 0 {
                                                 order_manager.total_count -= removed;
                                                 info!("已从 ORDER_MANAGER 中删除失败的订单，ID: {}, 剩余订单总数: {}", resp.id, order_manager.total_count);
+                                            }
+                                        }
+                                    } else if resp.id.starts_with("place_order_sell_") {
+                                        info!("收到卖单响应，ID: {}, 状态: {}", resp.id, resp.status);
+                                        if resp.status != 200 {
+                                            warn!("卖单请求失败，ID: {}, 错误: {:?}", resp.id, resp.error);
+                                            let mut order_manager = ORDER_MANAGER.lock().await;
+                                            
+                                            let mut related_buy_client_id: Option<String> = None;
+                                            
+                                            if let Some(sell_order) = order_manager.orders.iter().find(|o| o.id == resp.id) {
+                                                related_buy_client_id = sell_order.related_buy_order_client_id.clone();
+                                            }
+                                            
+                                            if let Some(buy_client_id) = related_buy_client_id {
+                                                if let Some(buy_order) = order_manager.orders.iter_mut().find(|o| o.client_order_id == buy_client_id) {
+                                                    buy_order.status = OrderStatus::Filled;
+                                                    info!("卖单失败，已将关联买单状态恢复为 Filled，客户端订单号: {}", buy_client_id);
+                                                }
+                                            }
+                                            
+                                            let initial_len = order_manager.orders.len();
+                                            order_manager.orders.retain(|order| order.id != resp.id);
+                                            let removed = initial_len - order_manager.orders.len();
+                                            if removed > 0 {
+                                                info!("已从 ORDER_MANAGER 中删除失败的卖单，ID: {}", resp.id);
                                             }
                                         }
                                     }
