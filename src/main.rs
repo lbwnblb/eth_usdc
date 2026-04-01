@@ -619,10 +619,8 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
                 }
             };
             
-            if ask_price > order.price {
-                found_order = Some((ask_price, order.filled_quantity, order.client_order_id.clone()));
-                break;
-            }
+            found_order = Some((ask_price, order.filled_quantity, order.client_order_id.clone()));
+            break;
         }
     }
     
