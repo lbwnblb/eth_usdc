@@ -65,6 +65,8 @@ pub struct GlobalOrderManager {
 lazy_static! {
     pub static ref USDC_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
     pub static ref USDT_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
+    pub static ref USDT_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
+    pub static ref USDC_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
     pub static ref ORDER_MANAGER: Arc<Mutex<GlobalOrderManager>> = Arc::new(Mutex::new(GlobalOrderManager { orders: Vec::new(), total_count: 0, last_buy_order_time: 0, last_sell_order_time: 0 }));
 }
 
@@ -435,15 +437,31 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
 
     let (balance_to_use, balance_name) = match quote_asset {
         QuoteAsset::USDT => {
-            let usdt_balance = USDT_AVAILABLE_BALANCE.lock().await;
-            let usdt_to_use = *usdt_balance / dec!(10);
-            drop(usdt_balance);
+            let mut usdt_to_use_global = USDT_TO_USE.lock().await;
+            let usdt_to_use = if *usdt_to_use_global == dec!(0.0) {
+                let usdt_balance = USDT_AVAILABLE_BALANCE.lock().await;
+                let calculated = *usdt_balance / dec!(10);
+                drop(usdt_balance);
+                let mut global = usdt_to_use_global;
+                *global = calculated;
+                calculated
+            } else {
+                *usdt_to_use_global
+            };
             (usdt_to_use, "USDT")
         },
         QuoteAsset::USDC => {
-            let usdc_balance = USDC_AVAILABLE_BALANCE.lock().await;
-            let usdc_to_use = *usdc_balance / dec!(10);
-            drop(usdc_balance);
+            let mut usdc_to_use_global = USDC_TO_USE.lock().await;
+            let usdc_to_use = if *usdc_to_use_global == dec!(0.0) {
+                let usdc_balance = USDC_AVAILABLE_BALANCE.lock().await;
+                let calculated = *usdc_balance / dec!(10);
+                drop(usdc_balance);
+                let mut global = usdc_to_use_global;
+                *global = calculated;
+                calculated
+            } else {
+                *usdc_to_use_global
+            };
             (usdc_to_use, "USDC")
         },
     };
