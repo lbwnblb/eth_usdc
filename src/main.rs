@@ -1,5 +1,6 @@
 use futures_util::{SinkExt, StreamExt};
 use log::{error, info, warn};
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::spawn;
@@ -7,11 +8,20 @@ use tokio::sync::{Mutex, watch};
 use tokio::time::{interval, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::handshake::client::Response;
+use lazy_static::lazy_static;
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use crate::logger::init_logger;
 use crate::utils::get_env;
-use crate::ws_api::{login, parse_login_response, is_login_success, check_response_id, create_user_data_stream_request, parse_user_data_stream_response, create_ping_user_data_stream_request, parse_ping_response, create_market_subscribe_request, create_account_balance_request, parse_account_balance_response};
+use crate::ws_api::{login, parse_login_response, is_login_success, check_response_id, create_user_data_stream_request, parse_user_data_stream_response, create_ping_user_data_stream_request, parse_ping_response, create_market_subscribe_request, create_account_balance_request, parse_account_balance_response, parse_book_ticker, create_order_request, parse_user_data_stream, UserDataStreamEvent};
 use crate::ed25519::{get_api_key, get_private_key};
 use crate::utils::get_server_time;
+
+lazy_static! {
+    pub static ref USDC_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
+    pub static ref USDT_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
+    pub static ref ORDER_PLACED: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+}
 
 mod ed25519;
 mod utils;
@@ -45,12 +55,75 @@ async fn connect_user_data_stream(listen_key: &str) -> Result<(), Box<dyn std::e
         match connect_async(ws_url).await {
             Ok((ws_stream, _)) => {
                 info!("User data stream connected successfully");
-                let (_, mut read) = ws_stream.split();
+                let (mut write, mut read) = ws_stream.split();
+                
+                let stream_name = format!("{}@ACCOUNT_UPDATE", listen_key);
+                let subscribe_request = serde_json::json!({
+                    "method": "SUBSCRIBE",
+                    "params": [stream_name],
+                    "id": 1
+                });
+                let subscribe_text = serde_json::to_string(&subscribe_request).expect("JSON serialization failed");
+                info!("Sending subscribe request: {}", subscribe_text);
+                if let Err(e) = write.send(Message::Text(subscribe_text)).await {
+                    error!("Failed to send subscribe request: {}", e);
+                }
 
                 while let Some(msg) = read.next().await {
                     match msg {
                         Ok(Message::Text(text)) => {
-                            info!("User data stream received: {}", text);
+                            match parse_user_data_stream(&text) {
+                                Ok(event) => {
+                                    match event {
+                                        UserDataStreamEvent::OrderTradeUpdate(update) => {
+                                            info!("订单交易更新 - 订单ID: {}, 状态: {}, 交易对: {}, 方向: {}, 价格: {}, 已成交: {}, 手续费: {} {}",
+                                                update.data.order.order_id,
+                                                update.data.order.order_status,
+                                                update.data.order.symbol,
+                                                update.data.order.side,
+                                                update.data.order.price,
+                                                update.data.order.filled_accumulated_qty,
+                                                update.data.order.commission,
+                                                update.data.order.commission_asset.as_deref().unwrap_or("")
+                                            );
+                                        }
+                                        UserDataStreamEvent::TradeLite(trade) => {
+                                            info!("交易信息 - 订单ID: {}, 交易对: {}, 方向: {}, 价格: {}, 成交量: {}, 交易ID: {}",
+                                                trade.data.order_id,
+                                                trade.data.symbol,
+                                                trade.data.side,
+                                                trade.data.price,
+                                                trade.data.last_filled_qty,
+                                                trade.data.trade_id
+                                            );
+                                        }
+                                        UserDataStreamEvent::AccountUpdate(update) => {
+                                            info!("账户更新 - 原因: {}", update.data.account.reason);
+                                            for balance in &update.data.account.balances {
+                                                info!("  资产: {}, 钱包余额: {}, 可用余额: {}",
+                                                    balance.asset,
+                                                    balance.wallet_balance,
+                                                    balance.cross_wallet_balance
+                                                );
+                                            }
+                                            for position in &update.data.account.positions {
+                                                info!("  持仓: {}, 数量: {}, 入场价: {}, 未实现盈亏: {}",
+                                                    position.symbol,
+                                                    position.position_amount,
+                                                    position.entry_price,
+                                                    position.unrealized_pnl
+                                                );
+                                            }
+                                        }
+                                        UserDataStreamEvent::Unknown(json) => {
+                                            info!("收到未知类型的用户数据流消息: {}", json);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("解析用户数据流消息失败: {}", e);
+                                }
+                            }
                         }
                         Ok(Message::Close(_)) => {
                             warn!("User data stream closed by server");
@@ -84,7 +157,9 @@ async fn connect_market_stream() -> Result<(), Box<dyn std::error::Error>> {
                 info!("Market stream connected successfully");
                 let (mut write, mut read) = ws_stream.split();
 
-                let subscribe_text = create_market_subscribe_request(1, vec!["btcusdt@aggTrade", "btcusdt@depth"]);
+                let symbol_lower = utils::get_symbol().to_lowercase();
+                let agg_trade_stream = format!("{}@aggTrade", symbol_lower);
+                let subscribe_text = create_market_subscribe_request(1, vec![agg_trade_stream.as_str()]);
                 info!("Sending subscribe request: {}", subscribe_text);
                 write.send(Message::Text(subscribe_text)).await?;
 
@@ -115,7 +190,110 @@ async fn connect_market_stream() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>), Box<dyn std::error::Error>> {
+async fn connect_public_stream(write_arc: Arc<Mutex<WsWriteHalf>>, api_key: String, private_key: String) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        let ws_url = utils::get_ws_public_baseurl();
+        info!("Connecting to public stream: {}", ws_url);
+
+        match connect_async(ws_url).await {
+            Ok((ws_stream, _)) => {
+
+                let symbol = utils::get_symbol();
+                let symbol_lower = symbol.to_lowercase();
+                let book_ticker_stream = format!("{}@bookTicker", symbol_lower);
+
+                info!("Public stream connected successfully");
+                let (mut write, mut read) = ws_stream.split();
+
+                let subscribe_text = create_market_subscribe_request(1, vec![book_ticker_stream.as_str()]);
+                info!("Sending subscribe request for {}: {}", book_ticker_stream, subscribe_text);
+                write.send(Message::Text(subscribe_text)).await?;
+
+                while let Some(msg) = read.next().await {
+                    match msg {
+                        Ok(Message::Text(text)) => {
+                            // info!("Public stream received: {}", text);
+                            match parse_book_ticker(&text) {
+                                Ok(book_ticker) => {
+                                    // info!("Parsed BookTicker: stream={}, symbol={}, bid_price={}, bid_qty={}, ask_price={}, ask_qty={}",
+                                    //     book_ticker.stream,
+                                    //     book_ticker.data.symbol,
+                                    //     book_ticker.data.best_bid_price,
+                                    //     book_ticker.data.best_bid_qty,
+                                    //     book_ticker.data.best_ask_price,
+                                    //     book_ticker.data.best_ask_qty
+                                    // );
+                                    
+                                    let mut order_placed = ORDER_PLACED.lock().await;
+                                    if !*order_placed {
+                                        info!("Preparing to place order...");
+                                        
+                                        let bid_price = match book_ticker.data.best_bid_price.parse::<f64>() {
+                                            Ok(p) => p,
+                                            Err(e) => {
+                                                error!("Failed to parse bid price: {}", e);
+                                                continue;
+                                            }
+                                        };
+                                        
+                                        let timestamp = match get_server_time().await {
+                                            Ok(t) => t,
+                                            Err(e) => {
+                                                error!("Failed to get server time: {}", e);
+                                                continue;
+                                            }
+                                        };
+                                        
+                                        let order_request = create_order_request(
+                                            "place_order",
+                                            symbol,
+                                            "BUY",
+                                            "LIMIT",
+                                            0.01,
+                                            Some(bid_price),
+                                            Some("GTX"),
+                                            None,
+                                            timestamp
+                                        );
+                                        
+                                        info!("Sending order request: {}", order_request);
+                                        let mut write_guard = write_arc.lock().await;
+                                        if let Err(e) = write_guard.send(Message::Text(order_request)).await {
+                                            error!("Failed to send order request: {}", e);
+                                        } else {
+                                            *order_placed = true;
+                                            info!("Order request sent successfully!");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to parse BookTicker: {}", e);
+                                }
+                            }
+                        }
+                        Ok(Message::Close(_)) => {
+                            warn!("Public stream closed by server");
+                            break;
+                        }
+                        Err(e) => {
+                            error!("Public stream error: {}", e);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to connect to public stream: {}", e);
+            }
+        }
+
+        info!("Reconnecting public stream in 5 seconds...");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>, String, String), Box<dyn std::error::Error>> {
     let ws_url = utils::get_ws_api_baseurl();
     info!("Connecting to WebSocket: {}", ws_url);
 
@@ -128,6 +306,8 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>), Box<dy
             info!("WebSocket connected successfully");
             let api_key = get_api_key().await;
             let private_key = get_private_key().await;
+            let api_key_for_login = api_key.clone();
+            let private_key_for_login = private_key.clone();
             let (write, mut read) = ws_stream.split();
 
             let write_arc = Arc::new(Mutex::new(write));
@@ -137,7 +317,7 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>), Box<dy
 
             let timestamp = get_server_time().await?;
             let auth_id = "login";
-            let auth_request = login(&auth_id, api_key, private_key, timestamp);
+            let auth_request = login(&auth_id, &api_key_for_login, &private_key_for_login, timestamp);
             
             info!("Sending auth request: {}", auth_request);
             {
@@ -151,8 +331,11 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>), Box<dy
             let user_data_stream_start_id = "user_data_stream_start";
             let ping_id = "user_data_stream_ping";
             let account_balance_id = "account_balance";
-            let api_key_clone = api_key.clone();
-            let private_key_clone = private_key.clone();
+            let api_key_clone_for_ping = api_key.clone();
+            let api_key_clone_for_return = api_key.clone();
+            let api_key_clone_for_read = api_key.clone();
+            let private_key_clone_for_return = private_key.clone();
+            let private_key_clone_for_read = private_key.clone();
             
             let _ = spawn(async move {
                 let mut ping_interval = interval(Duration::from_secs(59 * 60));
@@ -163,7 +346,7 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>), Box<dy
                     
                     let key = listen_key_clone.lock().await;
                     if !key.is_empty() {
-                        let ping_request = create_ping_user_data_stream_request(ping_id, &api_key_clone);
+                        let ping_request = create_ping_user_data_stream_request(ping_id, &api_key_clone_for_ping);
                         info!("Sending ping request to renew listenKey: {}", ping_request);
                         let mut write_guard = write_for_ping.lock().await;
                         if let Err(e) = write_guard.send(Message::Text(ping_request)).await {
@@ -184,7 +367,7 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>), Box<dy
                                     match parse_login_response(&text) {
                                         Ok(_) => {
                                             info!("登录成功");
-                                            let user_data_stream_start_request = create_user_data_stream_request(user_data_stream_start_id, api_key);
+                                            let user_data_stream_start_request = create_user_data_stream_request(user_data_stream_start_id, &api_key_clone_for_read);
                                             info!("Sending user data stream start request: {}", user_data_stream_start_request);
                                             let mut write_guard = write_for_read.lock().await;
                                             if let Err(e) = write_guard.send(Message::Text(user_data_stream_start_request)).await {
@@ -193,7 +376,7 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>), Box<dy
                                             }
                                             
                                             let balance_timestamp = get_server_time().await.unwrap_or(timestamp);
-                                            let account_balance_request = create_account_balance_request(account_balance_id, api_key, private_key, balance_timestamp);
+                                            let account_balance_request = create_account_balance_request(account_balance_id, &api_key_clone_for_read, &private_key_clone_for_read, balance_timestamp);
                                             info!("Sending account balance request: {}", account_balance_request);
                                             if let Err(e) = write_guard.send(Message::Text(account_balance_request)).await {
                                                 error!("Failed to send account balance request: {}", e);
@@ -256,6 +439,30 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>), Box<dy
                                                 info!("Account balance retrieved successfully");
                                                 for balance in result {
                                                     info!("Asset: {}, Balance: {}, Available: {}", balance.asset, balance.balance, balance.available_balance);
+                                                    if balance.asset.to_lowercase() == "usdc" {
+                                                        match Decimal::from_str(&balance.available_balance) {
+                                                            Ok(decimal_balance) => {
+                                                                let mut usdc_balance = USDC_AVAILABLE_BALANCE.lock().await;
+                                                                *usdc_balance = decimal_balance;
+                                                                info!("Updated USDC available balance: {}", decimal_balance);
+                                                            }
+                                                            Err(e) => {
+                                                                error!("Failed to parse USDC balance to Decimal: {}", e);
+                                                            }
+                                                        }
+                                                    }
+                                                    if balance.asset.to_lowercase() == "usdt" {
+                                                        match Decimal::from_str(&balance.available_balance) {
+                                                            Ok(decimal_balance) => {
+                                                                let mut usdt_balance = USDT_AVAILABLE_BALANCE.lock().await;
+                                                                *usdt_balance = decimal_balance;
+                                                                info!("Updated USDT available balance: {}", decimal_balance);
+                                                            }
+                                                            Err(e) => {
+                                                                error!("Failed to parse USDT balance to Decimal: {}", e);
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         } else {
@@ -292,7 +499,7 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>), Box<dy
             let key = listen_key_rx.borrow().clone();
             info!("Received listenKey: {}", key);
             
-            Ok((key, write_arc_clone))
+            Ok((key, write_arc_clone, api_key_clone_for_return, private_key_clone_for_return))
         }
         Err(e) => {
             error!("Failed to connect to WebSocket: {}", e);
@@ -304,19 +511,25 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>), Box<dy
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = init_logger("logs");
-    let (listen_key, write_arc) = connect_websocket().await?;
+    let (listen_key, write_arc, api_key, private_key) = connect_websocket().await?;
     info!("Final listenKey received: {}", listen_key);
     info!("WebSocket write_arc received");
     
     let listen_key_clone = listen_key.clone();
-    tokio::spawn(async move {
+    spawn(async move {
         if let Err(e) = connect_user_data_stream(&listen_key_clone).await {
             error!("User data stream connection failed: {}", e);
         }
     });
     
-    if let Err(e) = connect_market_stream().await {
-        error!("Market stream connection failed: {}", e);
+    spawn(async move {
+        if let Err(e) = connect_market_stream().await {
+            error!("Market stream connection failed: {}", e);
+        }
+    });
+    
+    if let Err(e) = connect_public_stream(write_arc, api_key, private_key).await {
+        error!("Public stream connection failed: {}", e);
     }
     Ok(())
 }

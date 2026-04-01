@@ -1,0 +1,238 @@
+warning: in the working copy of 'Cargo.lock', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'Cargo.toml', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/main.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/ws_api.rs', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/Cargo.lock b/Cargo.lock[m
+[1mindex 5d836b9..9f7b714 100644[m
+[1m--- a/Cargo.lock[m
+[1m+++ b/Cargo.lock[m
+[36m@@ -2,6 +2,17 @@[m
+ # It is not intended for manual editing.[m
+ version = 4[m
+ [m
+[32m+[m[32m[[package]][m
+[32m+[m[32mname = "ahash"[m
+[32m+[m[32mversion = "0.7.8"[m
+[32m+[m[32msource = "registry+https://github.com/rust-lang/crates.io-index"[m
+[32m+[m[32mchecksum = "891477e0c6a8957309ee5c45a6368af3ae14bb510732d2684ffa19af310920f9"[m
+[32m+[m[32mdependencies = [[m
+[32m+[m[32m "getrandom 0.2.17",[m
+[32m+[m[32m "once_cell",[m
+[32m+[m[32m "version_check",[m
+[32m+[m[32m][m
+[32m+[m
+ [[package]][m
+ name = "android_system_properties"[m
+ version = "0.1.5"[m
+[36m@@ -26,6 +37,12 @@[m [mdependencies = [[m
+  "rustversion",[m
+ ][m
+ [m
+[32m+[m[32m[[package]][m
+[32m+[m[32mname = "arrayvec"[m
+[32m+[m[32mversion = "0.7.6"[m
+[32m+[m[32msource = "registry+https://github.com/rust-lang/crates.io-index"[m
+[32m+[m[32mchecksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"[m
+[32m+[m
+ [[package]][m
+ name = "atomic-waker"[m
+ version = "1.1.2"[m
+[36m@@ -56,6 +73,18 @@[m [mversion = "2.11.0"[m
+ source = "registry+https://github.com/rust-lang/crates.io-index"[m
+ checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"[m
+ [m
+[32m+[m[32m[[package]][m
+[32m+[m[32mname = "bitvec"[m
+[32m+[m[32mversion = "1.0.1"[m
+[32m+[m[32msource = "registry+https://github.com/rust-lang/crates.io-index"[m
+[32m+[m[32mchecksum = "1bc2832c24239b0141d5674bb9174f9d68a8b5b3f2753311927c172ca46f7e9c"[m
+[32m+[m[32mdependencies = [[m
+[32m+[m[32m "funty",[m
+[32m+[m[32m "radium",[m
+[32m+[m[32m "tap",[m
+[32m+[m[32m "wyz",[m
+[32m+[m[32m][m
+[32m+[m
+ [[package]][m
+ name = "block-buffer"[m
+ version = "0.10.4"[m
+[36m@@ -65,12 +94,58 @@[m [mdependencies = [[m
+  "generic-array",[m
+ ][m
+ [m
+[32m+[m[32m[[package]][m
+[32m+[m[32mname = "borsh"[m
+[32m+[m[32mversion = "1.6.1"[m
+[32m+[m[32msource = "registry+https://github.com/rust-lang/crates.io-index"[m
+[32m+[m[32mchecksum = "cfd1e3f8955a5d7de9fab72fc8373fade9fb8a703968cb200ae3dc6cf08e185a"[m
+[32m+[m[32mdependencies = [[m
+[32m+[m[32m "borsh-derive",[m
+[32m+[m[32m "bytes",[m
+[32m+[m[32m "cfg_aliases",[m
+[32m+[m[32m][m
+[32m+[m
+[32m+[m[32m[[package]][m
+[32m+[m[32mname = "borsh-derive"[m
+[32m+[m[32mversion = "1.6.1"[m
+[32m+[m[32msource = "registry+https://github.com/rust-lang/crates.io-index"[m
+[32m+[m[32mchecksum = "bfcfdc083699101d5a7965e49925975f2f55060f94f9a05e7187be95d530ca59"[m
+[32m+[m[32mdependencies = [[m
+[32m+[m[32m "once_cell",[m
+[32m+[m[32m "proc-macro-crate",[m
+[32m+[m[32m "proc-macro2",[m
+[32m+[m[32m "quote",[m
+[32m+[m[32m "syn 2.0.117",[m
+[32m+[m[32m][m
+[32m+[m
+ [[package]][m
+ name = "bumpalo"[m
+ version = "3.20.2"[m
+ source = "registry+https://github.com/rust-lang/crates.io-index"[m
+ checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"[m
+ [m
+[32m+[m[32m[[package]][m
+[32m+[m[32mname = "bytecheck"[m
+[32m+[m[32mversion = "0.6.12"[m
+[32m+[m[32msource = "registry+https://github.com/rust-lang/crates.io-index"[m
+[32m+[m[32mchecksum = "23cdc57ce23ac53c931e88a43d06d070a6fd142f2617be5855eb75efc9beb1c2"[m
+[32m+[m[32mdependencies = [[m
+[32m+[m[32m "bytecheck_derive",[m
+[32m+[m[32m "ptr_meta",[m
+[32m+[m[32m "simdutf8",[m
+[32m+[m[32m][m
+[32m+[m
+[32m+[m[32m[[package]][m
+[32m+[m[32mname = "bytecheck_derive"[m
+[32m+[m[32mversion = "0.6.12"[m
+[32m+[m[32msource = "registry+https://github.com/rust-lang/crates.io-index"[m
+[32m+[m[32mchecksum = "3db406d29fbcd95542e92559bed4d8ad92636d1ca8b3b72ede10b4bcc010e659"[m
+[32m+[m[32mdependencies = [[m
+[32m+[m[32m "proc-macro2",[m
+[32m+[m[32m "quote",[m
+[32m+[m[32m "syn 1.0.109",[m
+[32m+[m[32m][m
+[32m+[m
+ [[package]][m
+ name = "byteorder"[m
+ version = "1.5.0"[m
+[36m@@ -99,6 +174,12 @@[m [mversion = "1.0.4"[m
+ source = "registry+https://github.com/rust-lang/crates.io-index"[m
+ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"[m
+ [m
+[32m+[m[32m[[package]][m
+[32m+[m[32mname = "cfg_aliases"[m
+[32m+[m[32mversion = "0.2.1"[m
+[32m+[m[32msource = "registry+https://github.com/rust-lang/crates.io-index"[m
+[32m+[m[32mchecksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"[m
+[32m+[m
+ [[package]][m
+ name = "chrono"[m
+ version = "0.4.44"[m
+[36m@@ -187,7 +268,7 @@[m [mchecksum = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3"[m
+ dependencies = [[m
+  "proc-macro2",[m
+  "quote",[m
+[31m- "syn",[m
+[32m+[m[32m "syn 2.0.117",[m
+ ][m
+ [m
+ [[package]][m
+[36m@@ -225,7 +306,7 @@[m [mdependencies = [[m
+  "proc-macro2",[m
+  "quote",[m
+  "rustc_version",[m
+[31m- "syn",[m
+[32m+[m[32m "syn 2.0.117",[m
+  "unicode-xid",[m
+ ][m
+ [m
+[36m@@ -253,7 +334,7 @@[m [mchecksum = "97369cbbc041bc366949bc74d34658d6cda5621039731c6310521892a3a20ae0"[m
+ dependencies = [[m
+  "proc-macro2",[m
+  "quote",[m
+[31m- "syn",[m
+[32m+[m[32m "syn 2.0.117",[m
+ ][m
+ [m
+ [[package]][m
+[36m@@ -315,11 +396,14 @@[m [mdependencies = [[m
+  "ed25519-dalek",[m
+  "futures-util",[m
+  "hex",[m
+[32m+[m[32m "lazy_static",[m
+  "log",[m
+  "log4rs",[m
+  "pkcs8",[m
+  "rand 0.8.5",[m
+  "reqwest",[m
+[32m+[m[32m "rust_decimal",[m
+[32m+[m[32m "rust_decimal_macros",[m
+  "serde",[m
+  "serde_json",[m
+  "tokio",[m
+[36m@@ -381,6 +465,12 @@[m [mdependencies = [[m
+  "percent-encoding",[m
+ ][m
+ [m
+[32m+[m[32m[[package]][m
+[32m+[m[32mname = "funty"[m
+[32m+[m[32mversion = "2.0.0"[m
+[32m+[m[32msource = "registry+https://github.com/rust-lang/crates.io-index"[m
+[32m+[m[32mchecksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"[m
+[32m+[m
+ [[package]][m
+ name = "futures-channel"[m
+ version = "0.3.32"[m
+[36m@@ -404,7 +494,7 @@[m [mchecksum = "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"[m
+ dependencies = [[m
+  "proc-macro2",[m
+  "quote",[m
+[31m- "syn",[m
+[32m+[m[32m "syn 2.0.117",[m
+ ][m
+ [m
+ [[package]][m
+[36m@@ -498,6 +588,15 @@[m [mdependencies = [[m
+  "tracing",[m
+ ][m
+ [m
+[32m+[m[32m[[package]][m
+[32m+[m[32mname = "hashbrown"[m
+[32m+[m[32mversion = "0.12.3"[m
+[32m+[m[32msource = "registry+https://github.com/rust-lang/crates.io-index"[m
+[32m+[m[32mchecksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"[m
+[32m+[m[32mdependencies = [[m
+[32m+[m[32m "ahash",[m
+[32m+[m[32m][m
+[32m+[m
+ [[package]][m
+ name = "hashbrown"[m
+ version = "0.15.5"[m
+[36m@@ -827,6 +926,12 @@[m [mdependencies = [[m
+  "wasm-bindgen",[m
+ ][m
+ [m
+[32m+[m[32m[[package]][m
+[32m+[m[32mname = "lazy_static"[m
+[32m+[m[32mversion = "1.5.0"[m
+[32m+[m[32msource = "registry+https://github.com/rust-lang/crates.io-index"[m
+[32m+[m[32mchecksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"[m
+[32m+[m
+ [[package]][m
+ name = "leb128fmt"[m
+ version = "0.1.0"[m
+[36m@@ -988,7 +1093,7 @@[m [mchecksum = "a948666b637a0f465e8564c73e89d4dde00d72d4d473cc972f390fc3dcee7d9c"[m
+ dependencies = [[m
+  "proc-macro2",[m
+  "quote",[m
+[31m- "syn",[m
+[32m+[m[32m "syn 2.0.117",[m
+ ][m
+ [m
+ [[package]][m
+[36m@@ -1109,7 +1214,16 @@[m [msource = "registry+https://github.com/rust-lang/crates.io-index"[m
+ checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"[m
+ dependencies = [[m
+  "proc-macro2",[m
+[31m- "syn",[m
+[32m+[m[32m "syn 2.0.117",[m
