@@ -28,6 +28,7 @@ pub enum OrderStatus {
     Canceled,
     Rejected,
     Expired,
+    Selling,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,18 +52,20 @@ pub struct Order {
     pub create_time: u64,
     pub update_time: u64,
     pub deducted_amount: Decimal,
+    pub related_buy_order_client_id: Option<String>,
 }
 
 pub struct GlobalOrderManager {
     pub orders: Vec<Order>,
     pub total_count: usize,
     pub last_buy_order_time: u64,
+    pub last_sell_order_time: u64,
 }
 
 lazy_static! {
     pub static ref USDC_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
     pub static ref USDT_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
-    pub static ref ORDER_MANAGER: Arc<Mutex<GlobalOrderManager>> = Arc::new(Mutex::new(GlobalOrderManager { orders: Vec::new(), total_count: 0, last_buy_order_time: 0 }));
+    pub static ref ORDER_MANAGER: Arc<Mutex<GlobalOrderManager>> = Arc::new(Mutex::new(GlobalOrderManager { orders: Vec::new(), total_count: 0, last_buy_order_time: 0, last_sell_order_time: 0 }));
 }
 
 mod ed25519;
@@ -479,6 +482,7 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
         create_time: timestamp as u64,
         update_time: timestamp as u64,
         deducted_amount: balance_to_use,
+        related_buy_order_client_id: None,
     };
     let mut order_manager = ORDER_MANAGER.lock().await;
     order_manager.orders.push(order);
@@ -524,9 +528,19 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
 }
 
 async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticker: &BookTickerStream) -> bool {
-    let order_manager = ORDER_MANAGER.lock().await;
+    let timestamp = book_ticker.data.event_time as i64;
     
-    let mut found_order: Option<(Decimal, Decimal)> = None;
+    let order_manager = ORDER_MANAGER.lock().await;
+    let ten_seconds_ms = 10 * 1000;
+    if order_manager.last_sell_order_time != 0 && (timestamp as u64) - order_manager.last_sell_order_time < ten_seconds_ms {
+        info!("距离上次卖出订单不足10秒，跳过此次请求，距离下次可请求还需 {} 毫秒", ten_seconds_ms - ((timestamp as u64) - order_manager.last_sell_order_time));
+        return false;
+    }
+    drop(order_manager);
+    
+    let mut order_manager = ORDER_MANAGER.lock().await;
+    
+    let mut found_order: Option<(Decimal, Decimal, String)> = None;
     
     for order in &order_manager.orders {
         if order.status == OrderStatus::Filled && order.side == OrderSide::Buy {
@@ -539,15 +553,20 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
             };
             
             if ask_price > order.price {
-                found_order = Some((ask_price, order.filled_quantity));
+                found_order = Some((ask_price, order.filled_quantity, order.client_order_id.clone()));
                 break;
             }
         }
     }
     
-    drop(order_manager);
-    
-    if let Some((ask_price, filled_quantity)) = found_order {
+    if let Some((ask_price, filled_quantity, client_order_id)) = found_order {
+        if let Some(order) = order_manager.orders.iter_mut().find(|o| o.client_order_id == client_order_id) {
+            order.status = OrderStatus::Selling;
+            info!("已将买入订单标记为卖出中，客户端订单号: {}", client_order_id);
+        }
+        
+        drop(order_manager);
+        
         let timestamp = book_ticker.data.event_time as i64;
         
         let new_client_order_id = format!("{}_{}_{}_sell", symbol, "SELL", timestamp);
@@ -583,6 +602,23 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
             timestamp
         );
         
+        let sell_order = Order {
+            id: request_id.clone(),
+            order_id: String::new(),
+            client_order_id: new_client_order_id.clone(),
+            symbol: symbol.to_string(),
+            side: OrderSide::Sell,
+            status: OrderStatus::New,
+            price: ask_price,
+            quantity: filled_quantity.clone(),
+            filled_quantity: dec!(0.0),
+            quote_asset: if symbol.ends_with("USDC") { QuoteAsset::USDC } else { QuoteAsset::USDT },
+            create_time: timestamp as u64,
+            update_time: timestamp as u64,
+            deducted_amount: dec!(0.0),
+            related_buy_order_client_id: Some(client_order_id.clone()),
+        };
+        
         info!("Sending sell order request: {}", order_request);
         let send_result = {
             let mut write_guard = write_arc.lock().await;
@@ -591,8 +627,19 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
         
         if let Err(e) = send_result {
             error!("Failed to send sell order request: {}", e);
+            let mut order_manager = ORDER_MANAGER.lock().await;
+            if let Some(order) = order_manager.orders.iter_mut().find(|o| o.client_order_id == client_order_id) {
+                order.status = OrderStatus::Filled;
+                info!("卖出订单发送失败，已将买入订单状态恢复为 Filled，客户端订单号: {}", client_order_id);
+            }
         } else {
             info!("Sell order request sent successfully!");
+            let mut order_manager = ORDER_MANAGER.lock().await;
+            order_manager.orders.push(sell_order);
+            order_manager.last_sell_order_time = timestamp as u64;
+            info!("已添加卖出订单到全局数组");
+            info!("已更新 last_sell_order_time 为 {}", timestamp);
+            drop(order_manager);
         }
         
         return true;
