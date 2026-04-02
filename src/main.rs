@@ -53,6 +53,7 @@ pub struct Order {
     pub update_time: u64,
     pub deducted_amount: Decimal,
     pub related_buy_order_client_id: Option<String>,
+    pub timeout_processed: bool,
 }
 
 pub struct GlobalOrderManager {
@@ -65,8 +66,8 @@ pub struct GlobalOrderManager {
 lazy_static! {
     pub static ref USDC_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
     pub static ref USDT_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
-    pub static ref USDT_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
-    pub static ref USDC_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
+    pub static ref USDT_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(500)));
+    pub static ref USDC_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(500)));
     pub static ref ORDER_MANAGER: Arc<Mutex<GlobalOrderManager>> = Arc::new(Mutex::new(GlobalOrderManager { orders: Vec::new(), total_count: 0, last_buy_order_time: 0, last_sell_order_time: 0 }));
 }
 
@@ -102,8 +103,10 @@ async fn handle_order_trade_update(update: OrderTradeUpdateStream) {
     
     if is_sell_order && is_filled {
         let mut related_buy_client_id = None;
+        let mut timeout_processed = false;
         if let Some(sell_order) = order_manager.orders.iter().find(|o| o.client_order_id == *client_order_id) {
             related_buy_client_id = sell_order.related_buy_order_client_id.clone();
+            timeout_processed = sell_order.timeout_processed;
         }
         
         if let Some(buy_client_id) = related_buy_client_id {
@@ -111,8 +114,12 @@ async fn handle_order_trade_update(update: OrderTradeUpdateStream) {
             order_manager.orders.retain(|o| o.client_order_id != *client_order_id && o.client_order_id != buy_client_id);
             let removed = initial_len - order_manager.orders.len();
             if removed > 0 {
-                order_manager.total_count -= 1;
-                info!("卖出订单全部成交，已剔除买单(自定义ID: {})和卖单(自定义ID: {})，总仓位减1，当前总仓位: {}", buy_client_id, client_order_id, order_manager.total_count);
+                if !timeout_processed {
+                    order_manager.total_count -= 1;
+                    info!("卖出订单全部成交，已剔除买单(自定义ID: {})和卖单(自定义ID: {})，总仓位减1，当前总仓位: {}", buy_client_id, client_order_id, order_manager.total_count);
+                } else {
+                    info!("卖出订单全部成交，但已超时处理过，总仓位不再减1，已剔除买单(自定义ID: {})和卖单(自定义ID: {})，当前总仓位: {}", buy_client_id, client_order_id, order_manager.total_count);
+                }
             }
         }
     } else if is_canceled && !is_sell_order {
@@ -195,14 +202,19 @@ async fn handle_trade_lite(trade: TradeLiteStream) {
         
         if is_sell_order && order.filled_quantity >= order.quantity {
             let related_buy_client_id = order.related_buy_order_client_id.clone();
+            let timeout_processed = order.timeout_processed;
             
             if let Some(buy_client_id) = related_buy_client_id {
                 let initial_len = order_manager.orders.len();
                 order_manager.orders.retain(|o| o.client_order_id != *client_order_id && o.client_order_id != buy_client_id);
                 let removed = initial_len - order_manager.orders.len();
                 if removed > 0 {
-                    order_manager.total_count -= 1;
-                    info!("卖出订单全部成交(TradeLite)，已剔除买单(自定义ID: {})和卖单(自定义ID: {})，总仓位减1，当前总仓位: {}", buy_client_id, client_order_id, order_manager.total_count);
+                    if !timeout_processed {
+                        order_manager.total_count -= 1;
+                        info!("卖出订单全部成交(TradeLite)，已剔除买单(自定义ID: {})和卖单(自定义ID: {})，总仓位减1，当前总仓位: {}", buy_client_id, client_order_id, order_manager.total_count);
+                    } else {
+                        info!("卖出订单全部成交(TradeLite)，但已超时处理过，总仓位不再减1，已剔除买单(自定义ID: {})和卖单(自定义ID: {})，当前总仓位: {}", buy_client_id, client_order_id, order_manager.total_count);
+                    }
                 }
             }
         }
@@ -447,8 +459,8 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
 
     let order_manager = ORDER_MANAGER.lock().await;
     let ten_seconds_ms = 10 * 1000;
-    if order_manager.total_count >= 10 {
-        info!("总仓位已达到20个，跳过此次买入请求，当前总仓位: {}", order_manager.total_count);
+    if order_manager.total_count >= 1 {
+        info!("跳过此次买入请求，当前总仓位: {}", order_manager.total_count);
         return true;
     }
     if order_manager.last_buy_order_time != 0 && (timestamp as u64) - order_manager.last_buy_order_time < ten_seconds_ms {
@@ -463,9 +475,12 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
         QuoteAsset::USDT
     };
 
-    let (balance_to_use, balance_name) = match quote_asset {
+    let (balance_to_use, balance_name, available_balance) = match quote_asset {
         QuoteAsset::USDT => {
             let mut usdt_to_use_global = USDT_TO_USE.lock().await;
+            let usdt_balance = USDT_AVAILABLE_BALANCE.lock().await;
+            let available = *usdt_balance;
+            drop(usdt_balance);
             let usdt_to_use = if *usdt_to_use_global == dec!(0.0) {
                 let usdt_balance = USDT_AVAILABLE_BALANCE.lock().await;
                 let calculated = *usdt_balance / dec!(10);
@@ -476,10 +491,13 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
             } else {
                 *usdt_to_use_global
             };
-            (usdt_to_use, "USDT")
+            (usdt_to_use, "USDT", available)
         },
         QuoteAsset::USDC => {
             let mut usdc_to_use_global = USDC_TO_USE.lock().await;
+            let usdc_balance = USDC_AVAILABLE_BALANCE.lock().await;
+            let available = *usdc_balance;
+            drop(usdc_balance);
             let usdc_to_use = if *usdc_to_use_global == dec!(0.0) {
                 let usdc_balance = USDC_AVAILABLE_BALANCE.lock().await;
                 let calculated = *usdc_balance / dec!(10);
@@ -490,12 +508,17 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
             } else {
                 *usdc_to_use_global
             };
-            (usdc_to_use, "USDC")
+            (usdc_to_use, "USDC", available)
         },
     };
 
     if balance_to_use <= dec!(0.0) {
         error!("Insufficient {} balance to place order", balance_name);
+        return true;
+    }
+
+    if available_balance < balance_to_use {
+        info!("可用余额 {} {} 小于买入金额 {} {}，跳过此次买入", available_balance, balance_name, balance_to_use, balance_name);
         return true;
     }
 
@@ -578,6 +601,7 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
         update_time: timestamp as u64,
         deducted_amount: balance_to_use,
         related_buy_order_client_id: None,
+        timeout_processed: false,
     };
     let mut order_manager = ORDER_MANAGER.lock().await;
     order_manager.orders.push(order);
@@ -647,8 +671,10 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
                 }
             };
             
-            found_order = Some((ask_price, order.filled_quantity, order.client_order_id.clone()));
-            break;
+            if ask_price > order.price {
+                found_order = Some((ask_price, order.filled_quantity, order.client_order_id.clone()));
+                break;
+            }
         }
     }
     
@@ -710,6 +736,7 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
             update_time: timestamp as u64,
             deducted_amount: dec!(0.0),
             related_buy_order_client_id: Some(client_order_id.clone()),
+            timeout_processed: false,
         };
         
         info!("Sending sell order request: {}", order_request);
@@ -1084,6 +1111,53 @@ async fn check_and_cancel_expired_orders(write_arc: Arc<Mutex<WsWriteHalf>>) {
     }
 }
 
+async fn check_timeout_sell_orders() {
+    let mut interval = interval(Duration::from_secs(30));
+    
+    loop {
+        interval.tick().await;
+        
+        let current_timestamp = match get_server_time().await {
+            Ok(t) => t,
+            Err(e) => {
+                error!("获取服务器时间失败: {}", e);
+                continue;
+            }
+        };
+        
+        let ten_minutes_ms = 10 * 60 * 1000;
+        
+        let mut order_manager = ORDER_MANAGER.lock().await;
+        
+        let mut count_to_decrement = 0;
+        let mut orders_marked = Vec::new();
+        
+        for order in &mut order_manager.orders {
+            if order.side == OrderSide::Sell 
+                && !order.timeout_processed 
+                && order.status != OrderStatus::Filled
+                && order.status != OrderStatus::Canceled
+                && order.status != OrderStatus::Expired
+                && order.status != OrderStatus::Rejected
+                && (current_timestamp as u64) - order.create_time >= ten_minutes_ms {
+                
+                order.timeout_processed = true;
+                count_to_decrement += 1;
+                orders_marked.push(order.client_order_id.clone());
+            }
+        }
+        
+        for client_order_id in orders_marked {
+            info!("发现超时卖单，总仓位减1 - 客户端订单号: {}", client_order_id);
+        }
+        
+        if count_to_decrement > 0 {
+            order_manager.total_count -= count_to_decrement;
+            info!("已标记{}个卖单为超时处理，当前总仓位: {}", count_to_decrement, order_manager.total_count);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = init_logger("logs");
@@ -1107,6 +1181,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let write_arc_for_check = write_arc.clone();
     spawn(async move {
         check_and_cancel_expired_orders(write_arc_for_check).await;
+    });
+
+    spawn(async move {
+        check_timeout_sell_orders().await;
     });
 
     if let Err(e) = connect_public_stream(write_arc, api_key, private_key).await {
