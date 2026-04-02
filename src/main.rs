@@ -243,13 +243,33 @@ async fn handle_trade_lite(trade: TradeLiteStream) {
 async fn try_reconnect(
     ws_url: &str,
     write_arc: &Arc<Mutex<WsWriteHalf>>,
+    api_key: String,
+    private_key: String,
 ) -> Option<WsReadHalf> {
+    let timestamp = match get_server_time().await {
+        Ok(t) => Some(t),
+        Err(e) => {
+            error!("Failed to get server time for reconnection: {}", e);
+            None
+        }
+    };
+    
     match connect_async(ws_url).await {
         Ok((ws_stream, _)) => {
             info!("Reconnected to WebSocket");
             let (write_reconnected, read_reconnected) = ws_stream.split();
             let mut guard = write_arc.lock().await;
             *guard = write_reconnected;
+            drop(guard);
+            
+            if let Some(timestamp) = timestamp {
+                let auth_id = "login";
+                let auth_request = login(&auth_id, &api_key, &private_key, timestamp);
+                info!("Sending auth request for reconnection: {}", auth_request);
+                let mut write_guard = write_arc.lock().await;
+                let _ = write_guard.send(Message::Text(auth_request)).await;
+            }
+            
             Some(read_reconnected)
         }
         Err(_) => None,
@@ -906,6 +926,8 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>, String,
             });
 
             let _ = spawn(async move {
+                let api_key_for_reconnect = api_key_clone_for_read.clone();
+                let private_key_for_reconnect = private_key_clone_for_read.clone();
                 while let Some(msg) = read.next().await {
                     match msg {
                         Ok(Message::Text(text)) => {
@@ -1100,7 +1122,7 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>, String,
                         }
                         Ok(Message::Close(_)) => {
                             warn!("WebSocket closed by server");
-                            if let Some(new_read) = try_reconnect(&ws_url, &write_arc).await {
+                            if let Some(new_read) = try_reconnect(&ws_url, &write_arc, api_key_for_reconnect.clone(), private_key_for_reconnect.clone()).await {
                                 read = new_read;
                             }
 
@@ -1108,7 +1130,7 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>, String,
                         Err(e) => {
                             error!("WebSocket error: {}", e);
                             warn!("WebSocket closed by server");
-                            if let Some(new_read) = try_reconnect(&ws_url, &write_arc).await {
+                            if let Some(new_read) = try_reconnect(&ws_url, &write_arc, api_key_for_reconnect.clone(), private_key_for_reconnect.clone()).await {
                                 read = new_read;
                             }
                         }
