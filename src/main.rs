@@ -11,7 +11,7 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use crate::logger::init_logger;
 use crate::utils::{calc_quantity, get_exchange_info, get_server_time};
-use crate::ws_api::{login, parse_login_response, is_login_success, check_response_id, create_user_data_stream_request, parse_user_data_stream_response, create_ping_user_data_stream_request, parse_ping_response, create_market_subscribe_request, create_account_balance_request, parse_account_balance_response, parse_book_ticker, create_order_request, parse_user_data_stream, UserDataStreamEvent, parse_generic_response, BookTickerStream, OrderTradeUpdateStream, TradeLiteStream};
+use crate::ws_api::{login, parse_login_response, is_login_success, check_response_id, create_user_data_stream_request, parse_user_data_stream_response, create_ping_user_data_stream_request, parse_ping_response, create_market_subscribe_request, create_account_balance_request, parse_account_balance_response, parse_book_ticker, create_order_request, create_cancel_order_request, parse_user_data_stream, UserDataStreamEvent, parse_generic_response, BookTickerStream, OrderTradeUpdateStream, TradeLiteStream};
 use crate::ed25519::{get_api_key, get_private_key};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +96,9 @@ async fn handle_order_trade_update(update: OrderTradeUpdateStream) {
     
     let is_sell_order = update.data.order.side.to_uppercase() == "SELL";
     let is_filled = update.data.order.order_status.as_str() == "FILLED";
+    let is_canceled = update.data.order.order_status.as_str() == "CANCELED" 
+        || update.data.order.order_status.as_str() == "EXPIRED"
+        || update.data.order.order_status.as_str() == "REJECTED";
     
     if is_sell_order && is_filled {
         let mut related_buy_client_id = None;
@@ -111,6 +114,37 @@ async fn handle_order_trade_update(update: OrderTradeUpdateStream) {
                 order_manager.total_count -= 1;
                 info!("卖出订单全部成交，已剔除买单(自定义ID: {})和卖单(自定义ID: {})，总仓位减1，当前总仓位: {}", buy_client_id, client_order_id, order_manager.total_count);
             }
+        }
+    } else if is_canceled && !is_sell_order {
+        let mut deducted_amount = None;
+        let mut quote_asset = None;
+        
+        if let Some(order) = order_manager.orders.iter().find(|o| o.client_order_id == *client_order_id) {
+            deducted_amount = Some(order.deducted_amount);
+            quote_asset = Some(order.quote_asset.clone());
+        }
+        
+        if let (Some(amount), Some(asset)) = (deducted_amount, quote_asset) {
+            match asset {
+                QuoteAsset::USDT => {
+                    let mut usdt_balance = USDT_AVAILABLE_BALANCE.lock().await;
+                    *usdt_balance += amount;
+                    info!("订单取消/过期，已恢复 {} USDT 到可用余额，剩余: {}", amount, usdt_balance);
+                },
+                QuoteAsset::USDC => {
+                    let mut usdc_balance = USDC_AVAILABLE_BALANCE.lock().await;
+                    *usdc_balance += amount;
+                    info!("订单取消/过期，已恢复 {} USDC 到可用余额，剩余: {}", amount, usdc_balance);
+                },
+            }
+        }
+        
+        let initial_len = order_manager.orders.len();
+        order_manager.orders.retain(|o| o.client_order_id != *client_order_id);
+        let removed = initial_len - order_manager.orders.len();
+        if removed > 0 {
+            order_manager.total_count -= removed;
+            info!("已从 ORDER_MANAGER 中删除取消/过期的买单，自定义订单号: {}, 剩余订单总数: {}", client_order_id, order_manager.total_count);
         }
     } else {
         if let Some(order) = order_manager.orders.iter_mut().find(|o| o.client_order_id == *client_order_id) {
@@ -951,6 +985,13 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>, String,
                                                 info!("已从 ORDER_MANAGER 中删除失败的卖单，ID: {}", resp.id);
                                             }
                                         }
+                                    } else if resp.id.starts_with("cancel_order_") {
+                                        info!("收到取消订单响应，ID: {}, 状态: {}", resp.id, resp.status);
+                                        if resp.status == 200 {
+                                            info!("订单取消成功，ID: {}", resp.id);
+                                        } else {
+                                            warn!("订单取消失败，ID: {}, 错误: {:?}", resp.id, resp.error);
+                                        }
                                     }
                                 }
                                 Err(_) => {}
@@ -989,6 +1030,60 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>, String,
     }
 }
 
+async fn check_and_cancel_expired_orders(write_arc: Arc<Mutex<WsWriteHalf>>) {
+    let mut interval = interval(Duration::from_secs(3));
+    
+    loop {
+        interval.tick().await;
+        
+        let current_timestamp = match get_server_time().await {
+            Ok(t) => t,
+            Err(e) => {
+                error!("获取服务器时间失败: {}", e);
+                continue;
+            }
+        };
+        
+        let orders_to_cancel: Vec<(String, String)> = {
+            let order_manager = ORDER_MANAGER.lock().await;
+            let ten_seconds_ms = 10 * 1000;
+            
+            order_manager
+                .orders
+                .iter()
+                .filter(|order| {
+                    order.side == OrderSide::Buy 
+                        && order.status == OrderStatus::New 
+                        && (current_timestamp as u64) - order.create_time >= ten_seconds_ms
+                })
+                .map(|order| (order.client_order_id.clone(), order.symbol.clone()))
+                .collect()
+        };
+        
+        for (client_order_id, symbol) in orders_to_cancel {
+            info!("发现超时买单，准备撤销 - 客户端订单号: {}, 交易对: {}", client_order_id, symbol);
+            
+            let request_id = format!("cancel_order_{}_{}", client_order_id, current_timestamp);
+            let cancel_request = create_cancel_order_request(
+                &request_id,
+                &client_order_id,
+                &symbol,
+                current_timestamp
+            );
+            
+            info!("发送撤销订单请求: {}", cancel_request);
+            let send_result = {
+                let mut write_guard = write_arc.lock().await;
+                write_guard.send(Message::Text(cancel_request)).await
+            };
+            
+            if let Err(e) = send_result {
+                error!("发送撤销订单请求失败 - 客户端订单号: {}, 错误: {}", client_order_id, e);
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = init_logger("logs");
@@ -1007,6 +1102,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(e) = connect_user_data_stream(&listen_key_clone).await {
             error!("User data stream connection failed: {}", e);
         }
+    });
+    
+    let write_arc_for_check = write_arc.clone();
+    spawn(async move {
+        check_and_cancel_expired_orders(write_arc_for_check).await;
     });
 
     if let Err(e) = connect_public_stream(write_arc, api_key, private_key).await {

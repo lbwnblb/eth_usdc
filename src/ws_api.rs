@@ -271,6 +271,25 @@ pub fn create_order_request(
     serde_json::to_string(&json).expect("JSON序列化失败")
 }
 
+pub fn create_cancel_order_request(
+    id: &str,
+    orig_client_order_id: &str,
+    symbol: &str,
+    timestamp: i64,
+) -> String {
+    let json = serde_json::json!({
+        "id": id,
+        "method": "order.cancel",
+        "params": {
+            "origClientOrderId": orig_client_order_id,
+            "symbol": symbol,
+            "timestamp": timestamp
+        }
+    });
+
+    serde_json::to_string(&json).expect("JSON序列化失败")
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Order {
     #[serde(rename = "s")]
