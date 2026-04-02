@@ -1063,7 +1063,7 @@ async fn check_and_cancel_expired_orders(write_arc: Arc<Mutex<WsWriteHalf>>) {
         for (client_order_id, symbol) in orders_to_cancel {
             info!("发现超时买单，准备撤销 - 客户端订单号: {}, 交易对: {}", client_order_id, symbol);
             
-            let request_id = format!("cancel_order_{}_{}", client_order_id, current_timestamp);
+            let request_id = format!("cancel_{}", current_timestamp);
             let cancel_request = create_cancel_order_request(
                 &request_id,
                 &client_order_id,
