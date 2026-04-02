@@ -455,6 +455,11 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
         }
     };
 
+    if symbol == "ETHUSDC" && bid_price > dec!(3000) {
+        info!("交易对是ETHUSDC且最佳买入价格({})超过3000，跳过此次买入", bid_price);
+        return true;
+    }
+
     let timestamp = book_ticker.data.event_time as i64;
 
     let order_manager = ORDER_MANAGER.lock().await;
@@ -1052,7 +1057,7 @@ async fn connect_websocket() -> Result<(String, Arc<Mutex<WsWriteHalf>>, String,
         }
         Err(e) => {
             error!("Failed to connect to WebSocket: {}", e);
-            return Err(e.into());
+            Err(e.into())
         }
     }
 }
@@ -1125,7 +1130,7 @@ async fn check_timeout_sell_orders() {
             }
         };
         
-        let ten_minutes_ms = 10 * 60 * 1000;
+        let one_hour_ms = 60 * 60 * 1000;
         
         let mut order_manager = ORDER_MANAGER.lock().await;
         
@@ -1139,7 +1144,7 @@ async fn check_timeout_sell_orders() {
                 && order.status != OrderStatus::Canceled
                 && order.status != OrderStatus::Expired
                 && order.status != OrderStatus::Rejected
-                && (current_timestamp as u64) - order.create_time >= ten_minutes_ms {
+                && (current_timestamp as u64) - order.create_time >= one_hour_ms {
                 
                 order.timeout_processed = true;
                 count_to_decrement += 1;

@@ -19,7 +19,7 @@ pub fn get_env() -> &'static str {
 
 pub fn get_symbol() -> &'static str {
     SYMBOL.get_or_init(|| {
-        "BTCUSDT".to_string()
+        "ETHUSDC".to_string()
     })
 }
 
