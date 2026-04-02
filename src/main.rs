@@ -155,15 +155,9 @@ async fn handle_trade_lite(trade: TradeLiteStream) {
     
     if let Some(order) = order_manager.orders.iter_mut().find(|o| o.client_order_id == *client_order_id) {
         order.order_id = trade.data.order_id.to_string();
-        
-        if let Ok(filled_qty) = Decimal::from_str(&trade.data.last_filled_qty) {
-            order.filled_quantity += filled_qty;
-        }
-        
         order.update_time = trade.data.transaction_time;
         
-        info!("已更新全局订单(TradeLite) - 自定义订单号: {}, 已成交: {}", 
-            client_order_id, order.filled_quantity);
+        info!("已更新全局订单(TradeLite) - 自定义订单号: {}", client_order_id);
         
         if is_sell_order && order.filled_quantity >= order.quantity {
             let related_buy_client_id = order.related_buy_order_client_id.clone();
