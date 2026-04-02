@@ -503,6 +503,42 @@ pub fn parse_generic_response(response: &str) -> Result<GenericResponse, String>
     serde_json::from_str(response).map_err(|e| format!("JSON解析失败: {}", e))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AggTradeData {
+    #[serde(rename = "e")]
+    pub event_type: String,
+    #[serde(rename = "E")]
+    pub event_time: u64,
+    #[serde(rename = "s")]
+    pub symbol: String,
+    #[serde(rename = "a")]
+    pub aggregate_trade_id: u64,
+    #[serde(rename = "p")]
+    pub price: String,
+    #[serde(rename = "q")]
+    pub quantity: String,
+    #[serde(rename = "nq")]
+    pub normal_quantity: String,
+    #[serde(rename = "f")]
+    pub first_trade_id: u64,
+    #[serde(rename = "l")]
+    pub last_trade_id: u64,
+    #[serde(rename = "T")]
+    pub trade_time: u64,
+    #[serde(rename = "m")]
+    pub is_buyer_maker: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AggTradeStream {
+    pub stream: String,
+    pub data: AggTradeData,
+}
+
+pub fn parse_agg_trade(response: &str) -> Result<AggTradeStream, String> {
+    serde_json::from_str(response).map_err(|e| format!("AggTrade JSON解析失败: {}", e))
+}
+
 pub fn parse_user_data_stream(response: &str) -> Result<UserDataStreamEvent, String> {
     let json: serde_json::Value = serde_json::from_str(response)
         .map_err(|e| format!("JSON解析失败: {}", e))?;

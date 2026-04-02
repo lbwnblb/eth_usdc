@@ -11,7 +11,7 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use crate::logger::init_logger;
 use crate::utils::{calc_quantity, get_exchange_info, get_server_time};
-use crate::ws_api::{login, parse_login_response, is_login_success, check_response_id, create_user_data_stream_request, parse_user_data_stream_response, create_ping_user_data_stream_request, parse_ping_response, create_market_subscribe_request, create_account_balance_request, parse_account_balance_response, parse_book_ticker, create_order_request, create_cancel_order_request, parse_user_data_stream, UserDataStreamEvent, parse_generic_response, BookTickerStream, OrderTradeUpdateStream, TradeLiteStream};
+use crate::ws_api::{login, parse_login_response, is_login_success, check_response_id, create_user_data_stream_request, parse_user_data_stream_response, create_ping_user_data_stream_request, parse_ping_response, create_market_subscribe_request, create_account_balance_request, parse_account_balance_response, parse_book_ticker, create_order_request, create_cancel_order_request, parse_user_data_stream, UserDataStreamEvent, parse_generic_response, BookTickerStream, OrderTradeUpdateStream, TradeLiteStream, parse_agg_trade};
 use crate::ed25519::{get_api_key, get_private_key};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +69,25 @@ lazy_static! {
     pub static ref USDT_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(500)));
     pub static ref USDC_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(500)));
     pub static ref ORDER_MANAGER: Arc<Mutex<GlobalOrderManager>> = Arc::new(Mutex::new(GlobalOrderManager { orders: Vec::new(), total_count: 0, last_buy_order_time: 0, last_sell_order_time: 0 }));
+    pub static ref LAST_PRICE: Arc<Mutex<Option<Decimal>>> = Arc::new(Mutex::new(None));
+    pub static ref PRICE_GAPS: Arc<Mutex<Vec<Decimal>>> = Arc::new(Mutex::new(Vec::new()));
+}
+
+fn calculate_median(gaps: &mut Vec<Decimal>) -> Option<Decimal> {
+    if gaps.is_empty() {
+        return None;
+    }
+    
+    gaps.sort_by(|a, b| b.cmp(a));
+    let len = gaps.len();
+    
+    if len % 2 == 1 {
+        Some(gaps[len / 2])
+    } else {
+        let mid_left = gaps[(len - 1) / 2];
+        let mid_right = gaps[len / 2];
+        Some((mid_left + mid_right) / dec!(2.0))
+    }
 }
 
 mod ed25519;
@@ -364,8 +383,44 @@ async fn connect_market_stream() -> Result<(), Box<dyn std::error::Error>> {
 
                 while let Some(msg) = read.next().await {
                     match msg {
-                        Ok(Message::Text(_text)) => {
-                            // info!("Market stream received: {}", _text);
+                        Ok(Message::Text(text)) => {
+                            // info!("Market stream received: {}", text);
+                            match parse_agg_trade(&text) {
+                                Ok(agg_trade) => {
+                                    info!("聚合交易 - 交易对: {}, 价格: {}, 数量: {}, 普通数量: {}, 买方做市: {}, 交易ID: {}",
+                                        agg_trade.data.symbol,
+                                        agg_trade.data.price,
+                                        agg_trade.data.quantity,
+                                        agg_trade.data.normal_quantity,
+                                        agg_trade.data.is_buyer_maker,
+                                        agg_trade.data.aggregate_trade_id
+                                    );
+                                    
+                                    if let Ok(current_price) = Decimal::from_str(&agg_trade.data.price) {
+                                        let mut last_price_guard = LAST_PRICE.lock().await;
+                                        
+                                        if let Some(last_price) = *last_price_guard {
+                                            let gap = current_price - last_price;
+                                            
+                                            if gap != dec!(0.0) {
+                                                let mut price_gaps_guard = PRICE_GAPS.lock().await;
+                                                price_gaps_guard.push(gap);
+                                                
+                                                if price_gaps_guard.len() > 1000 {
+                                                    price_gaps_guard.remove(0);
+                                                }
+                                                
+                                                info!("价格间距已记录: {}, 当前间距数组长度: {}", gap, price_gaps_guard.len());
+                                            }
+                                        }
+                                        
+                                        *last_price_guard = Some(current_price);
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("解析聚合交易失败: {}", e);
+                                }
+                            }
                         }
                         Ok(Message::Close(_)) => {
                             warn!("Market stream closed by server");
@@ -666,6 +721,10 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
     
     let mut found_order: Option<(Decimal, Decimal, String)> = None;
     
+    let mut price_gaps = PRICE_GAPS.lock().await;
+    let median_gap = calculate_median(&mut price_gaps);
+    drop(price_gaps);
+    
     for order in &order_manager.orders {
         if order.status == OrderStatus::Filled && order.side == OrderSide::Buy {
             let ask_price = match Decimal::from_str(&book_ticker.data.best_ask_price) {
@@ -676,10 +735,20 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
                 }
             };
             
-            if ask_price > order.price {
-                found_order = Some((ask_price, order.filled_quantity, order.client_order_id.clone()));
-                break;
-            }
+            let target_price = if let Some(gap) = median_gap {
+                order.price + gap
+            } else {
+                ask_price
+            };
+            
+            let sell_price = if ask_price > target_price {
+                ask_price
+            } else {
+                target_price
+            };
+            
+            found_order = Some((sell_price, order.filled_quantity, order.client_order_id.clone()));
+            break;
         }
     }
     
