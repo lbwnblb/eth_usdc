@@ -71,6 +71,7 @@ lazy_static! {
     pub static ref ORDER_MANAGER: Arc<Mutex<GlobalOrderManager>> = Arc::new(Mutex::new(GlobalOrderManager { orders: Vec::new(), total_count: 0, last_buy_order_time: 0, last_sell_order_time: 0 }));
     pub static ref LAST_PRICE: Arc<Mutex<Option<Decimal>>> = Arc::new(Mutex::new(None));
     pub static ref PRICE_GAPS: Arc<Mutex<Vec<Decimal>>> = Arc::new(Mutex::new(Vec::new()));
+    pub static ref RECENT_PRICES: Arc<Mutex<Vec<Decimal>>> = Arc::new(Mutex::new(Vec::new()));
 }
 
 fn calculate_median(gaps: &mut Vec<Decimal>) -> Option<Decimal> {
@@ -86,6 +87,23 @@ fn calculate_median(gaps: &mut Vec<Decimal>) -> Option<Decimal> {
     } else {
         let mid_left = gaps[(len - 1) / 2];
         let mid_right = gaps[len / 2];
+        Some((mid_left + mid_right) / dec!(2.0))
+    }
+}
+
+fn calculate_price_median(prices: &mut Vec<Decimal>) -> Option<Decimal> {
+    if prices.is_empty() {
+        return None;
+    }
+    
+    prices.sort_by(|a, b| b.cmp(a));
+    let len = prices.len();
+    
+    if len % 2 == 1 {
+        Some(prices[len / 2])
+    } else {
+        let mid_left = prices[(len - 1) / 2];
+        let mid_right = prices[len / 2];
         Some((mid_left + mid_right) / dec!(2.0))
     }
 }
@@ -435,6 +453,13 @@ async fn connect_market_stream() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                         
                                         *last_price_guard = Some(current_price);
+                                        
+                                        let mut recent_prices_guard = RECENT_PRICES.lock().await;
+                                        recent_prices_guard.push(current_price);
+                                        
+                                        if recent_prices_guard.len() > 1000 {
+                                            recent_prices_guard.remove(0);
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -533,6 +558,18 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
     if symbol == "ETHUSDC" && bid_price > dec!(3000) {
         info!("交易对是ETHUSDC且最佳买入价格({})超过3000，跳过此次买入", bid_price);
         return true;
+    }
+
+    let mut recent_prices_guard = RECENT_PRICES.lock().await;
+    let mut prices_clone = recent_prices_guard.clone();
+    drop(recent_prices_guard);
+
+    if let Some(median_price) = calculate_price_median(&mut prices_clone) {
+        if bid_price < median_price {
+            info!("最佳买入价格({})小于中位数价格({})，跳过此次买入", bid_price, median_price);
+            return true;
+        }
+        info!("最佳买入价格({}) >= 中位数价格({})，继续处理", bid_price, median_price);
     }
 
     let timestamp = book_ticker.data.event_time as i64;
