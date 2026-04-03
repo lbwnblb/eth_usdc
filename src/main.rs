@@ -66,8 +66,8 @@ pub struct GlobalOrderManager {
 lazy_static! {
     pub static ref USDC_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
     pub static ref USDT_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
-    pub static ref USDT_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(500)));
-    pub static ref USDC_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(500)));
+    pub static ref USDT_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(30)));
+    pub static ref USDC_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(30)));
     pub static ref ORDER_MANAGER: Arc<Mutex<GlobalOrderManager>> = Arc::new(Mutex::new(GlobalOrderManager { orders: Vec::new(), total_count: 0, last_buy_order_time: 0, last_sell_order_time: 0 }));
     pub static ref LAST_PRICE: Arc<Mutex<Option<Decimal>>> = Arc::new(Mutex::new(None));
     pub static ref PRICE_GAPS: Arc<Mutex<Vec<Decimal>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1258,7 +1258,7 @@ async fn check_timeout_sell_orders() {
             }
         };
         
-        let one_hour_ms = 60 * 60 * 1000;
+        let hour_ms = 60 * 60 * 1000 * 2;
         
         let mut order_manager = ORDER_MANAGER.lock().await;
         
@@ -1272,7 +1272,7 @@ async fn check_timeout_sell_orders() {
                 && order.status != OrderStatus::Canceled
                 && order.status != OrderStatus::Expired
                 && order.status != OrderStatus::Rejected
-                && (current_timestamp as u64) - order.create_time >= one_hour_ms {
+                && (current_timestamp as u64) - order.create_time >= hour_ms {
                 
                 order.timeout_processed = true;
                 count_to_decrement += 1;

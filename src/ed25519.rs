@@ -35,7 +35,8 @@ pub async fn get_api_key() -> &'static String {
                 std::env::var("binance_test_public_key")
                     .expect("环境变量 binance_test_public_key 未设置")
             } else {
-                String::new()
+                std::env::var("binance_public_key")
+                    .expect("环境变量 binance_test_public_key 未设置")
             }
         })
         .await
@@ -49,7 +50,8 @@ pub async fn get_private_key() -> &'static String {
                 std::env::var("binance_test_private_key")
                     .expect("环境变量 binance_test_private_key 未设置")
             } else {
-                String::new()
+                std::env::var("binance_private_key")
+                    .expect("环境变量 binance_private_key 未设置")
             }
         })
         .await
