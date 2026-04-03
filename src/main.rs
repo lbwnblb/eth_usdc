@@ -425,14 +425,14 @@ async fn connect_market_stream() -> Result<(), Box<dyn std::error::Error>> {
                             // info!("Market stream received: {}", text);
                             match parse_agg_trade(&text) {
                                 Ok(agg_trade) => {
-                                    info!("聚合交易 - 交易对: {}, 价格: {}, 数量: {}, 普通数量: {}, 买方做市: {}, 交易ID: {}",
-                                        agg_trade.data.symbol,
-                                        agg_trade.data.price,
-                                        agg_trade.data.quantity,
-                                        agg_trade.data.normal_quantity,
-                                        agg_trade.data.is_buyer_maker,
-                                        agg_trade.data.aggregate_trade_id
-                                    );
+                                    // info!("聚合交易 - 交易对: {}, 价格: {}, 数量: {}, 普通数量: {}, 买方做市: {}, 交易ID: {}",
+                                    //     agg_trade.data.symbol,
+                                    //     agg_trade.data.price,
+                                    //     agg_trade.data.quantity,
+                                    //     agg_trade.data.normal_quantity,
+                                    //     agg_trade.data.is_buyer_maker,
+                                    //     agg_trade.data.aggregate_trade_id
+                                    // );
                                     
                                     if let Ok(current_price) = Decimal::from_str(&agg_trade.data.price) {
                                         let mut last_price_guard = LAST_PRICE.lock().await;
@@ -448,7 +448,7 @@ async fn connect_market_stream() -> Result<(), Box<dyn std::error::Error>> {
                                                     price_gaps_guard.remove(0);
                                                 }
                                                 
-                                                info!("价格间距已记录: {}, 当前间距数组长度: {}", gap, price_gaps_guard.len());
+                                                // info!("价格间距已记录: {}, 当前间距数组长度: {}", gap, price_gaps_guard.len());
                                             }
                                         }
                                         
@@ -511,7 +511,7 @@ async fn connect_public_stream(write_arc: Arc<Mutex<WsWriteHalf>>, _api_key: Str
                 while let Some(msg) = read.next().await {
                     match msg {
                         Ok(Message::Text(text)) => {
-                            info!("Public stream received: {}", text);
+                            // info!("Public stream received: {}", text);
                             match parse_book_ticker(&text) {
                                 Ok(book_ticker) => {
                                     order_buy(&write_arc, symbol, &book_ticker).await;
@@ -545,7 +545,7 @@ async fn connect_public_stream(write_arc: Arc<Mutex<WsWriteHalf>>, _api_key: Str
 }
 
 async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticker: &BookTickerStream) -> bool {
-    info!("Preparing to place order...");
+    // info!("Preparing to place order...");
 
     let bid_price = match Decimal::from_str(&book_ticker.data.best_bid_price) {
         Ok(p) => p,
@@ -566,10 +566,10 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
 
     if let Some(median_price) = calculate_price_median(&mut prices_clone) {
         if bid_price < median_price {
-            info!("最佳买入价格({})小于中位数价格({})，跳过此次买入", bid_price, median_price);
+            // info!("最佳买入价格({})小于中位数价格({})，跳过此次买入", bid_price, median_price);
             return true;
         }
-        info!("最佳买入价格({}) >= 中位数价格({})，继续处理", bid_price, median_price);
+        // info!("最佳买入价格({}) >= 中位数价格({})，继续处理", bid_price, median_price);
     }
 
     let timestamp = book_ticker.data.event_time as i64;
@@ -577,11 +577,11 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
     let order_manager = ORDER_MANAGER.lock().await;
     let ten_seconds_ms = 10 * 1000;
     if order_manager.total_count >= 1 {
-        info!("跳过此次买入请求，当前总仓位: {}", order_manager.total_count);
+        // info!("跳过此次买入请求，当前总仓位: {}", order_manager.total_count);
         return true;
     }
     if order_manager.last_buy_order_time != 0 && (timestamp as u64) - order_manager.last_buy_order_time < ten_seconds_ms {
-        info!("距离上次买入订单不足10秒，跳过此次请求，距离下次可请求还需 {} 毫秒", ten_seconds_ms - ((timestamp as u64) - order_manager.last_buy_order_time));
+        // info!("距离上次买入订单不足10秒，跳过此次请求，距离下次可请求还需 {} 毫秒", ten_seconds_ms - ((timestamp as u64) - order_manager.last_buy_order_time));
         return true;
     }
     drop(order_manager);
@@ -769,7 +769,7 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
     let order_manager = ORDER_MANAGER.lock().await;
     let ten_seconds_ms = 10 * 1000;
     if order_manager.last_sell_order_time != 0 && (timestamp as u64) - order_manager.last_sell_order_time < ten_seconds_ms {
-        info!("距离上次卖出订单不足10秒，跳过此次请求，距离下次可请求还需 {} 毫秒", ten_seconds_ms - ((timestamp as u64) - order_manager.last_sell_order_time));
+        // info!("距离上次卖出订单不足10秒，跳过此次请求，距离下次可请求还需 {} 毫秒", ten_seconds_ms - ((timestamp as u64) - order_manager.last_sell_order_time));
         return false;
     }
     drop(order_manager);
@@ -812,7 +812,7 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
     if let Some((ask_price, filled_quantity, client_order_id)) = found_order {
         if let Some(order) = order_manager.orders.iter_mut().find(|o| o.client_order_id == client_order_id) {
             order.status = OrderStatus::Selling;
-            info!("已将买入订单标记为卖出中，客户端订单号: {}", client_order_id);
+            // info!("已将买入订单标记为卖出中，客户端订单号: {}", client_order_id);
         }
         
         drop(order_manager);
@@ -820,7 +820,7 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
         let timestamp = book_ticker.data.event_time as i64;
         
         let new_client_order_id = format!("{}_{}_{}_sell", symbol, "SELL", timestamp);
-        info!("Generated newClientOrderId for sell: {}", new_client_order_id);
+         //   info!("Generated newClientOrderId for sell: {}", new_client_order_id);
         
         let quantity_f64 = match filled_quantity.to_string().parse::<f64>() {
             Ok(q) => q,
