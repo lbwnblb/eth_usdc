@@ -578,13 +578,8 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
     let timestamp = book_ticker.data.event_time as i64;
 
     let order_manager = ORDER_MANAGER.lock().await;
-    let ten_seconds_ms = 10 * 1000;
     if order_manager.total_count >= 1 {
         // info!("跳过此次买入请求，当前总仓位: {}", order_manager.total_count);
-        return true;
-    }
-    if order_manager.last_buy_order_time != 0 && (timestamp as u64) - order_manager.last_buy_order_time < ten_seconds_ms {
-        // info!("距离上次买入订单不足10秒，跳过此次请求，距离下次可请求还需 {} 毫秒", ten_seconds_ms - ((timestamp as u64) - order_manager.last_buy_order_time));
         return true;
     }
     drop(order_manager);
@@ -768,14 +763,6 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
 
 async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticker: &BookTickerStream) -> bool {
     let timestamp = book_ticker.data.event_time as i64;
-    
-    let order_manager = ORDER_MANAGER.lock().await;
-    let ten_seconds_ms = 10 * 1000;
-    if order_manager.last_sell_order_time != 0 && (timestamp as u64) - order_manager.last_sell_order_time < ten_seconds_ms {
-        // info!("距离上次卖出订单不足10秒，跳过此次请求，距离下次可请求还需 {} 毫秒", ten_seconds_ms - ((timestamp as u64) - order_manager.last_sell_order_time));
-        return false;
-    }
-    drop(order_manager);
     
     let mut order_manager = ORDER_MANAGER.lock().await;
     
