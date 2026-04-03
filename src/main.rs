@@ -438,7 +438,7 @@ async fn connect_market_stream() -> Result<(), Box<dyn std::error::Error>> {
                                         let mut last_price_guard = LAST_PRICE.lock().await;
                                         
                                         if let Some(last_price) = *last_price_guard {
-                                            let gap = current_price - last_price;
+                                            let gap = (current_price - last_price).abs();
                                             
                                             if gap != dec!(0.0) {
                                                 let mut price_gaps_guard = PRICE_GAPS.lock().await;
