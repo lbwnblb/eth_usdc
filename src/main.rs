@@ -70,6 +70,7 @@ lazy_static! {
     pub static ref USDC_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(30)));
     pub static ref ORDER_MANAGER: Arc<Mutex<GlobalOrderManager>> = Arc::new(Mutex::new(GlobalOrderManager { orders: Vec::new(), total_count: 0, last_buy_order_time: 0, last_sell_order_time: 0 }));
     pub static ref LAST_PRICE: Arc<Mutex<Option<Decimal>>> = Arc::new(Mutex::new(None));
+    pub static ref LATEST_PRICE: Arc<Mutex<Option<Decimal>>> = Arc::new(Mutex::new(None));
     pub static ref PRICE_GAPS: Arc<Mutex<Vec<Decimal>>> = Arc::new(Mutex::new(Vec::new()));
     pub static ref RECENT_PRICES: Arc<Mutex<Vec<Decimal>>> = Arc::new(Mutex::new(Vec::new()));
 }
@@ -436,6 +437,8 @@ async fn connect_market_stream() -> Result<(), Box<dyn std::error::Error>> {
                                     
                                     if let Ok(current_price) = Decimal::from_str(&agg_trade.data.price) {
                                         let mut last_price_guard = LAST_PRICE.lock().await;
+                                        let mut latest_price_guard = LATEST_PRICE.lock().await;
+                                        *latest_price_guard = Some(current_price);
                                         
                                         if let Some(last_price) = *last_price_guard {
                                             let gap = (current_price - last_price).abs();
@@ -1257,8 +1260,18 @@ async fn check_timeout_sell_orders() {
                 continue;
             }
         };
-        
-        let hour_ms = 60 * 60 * 1000 * 2;
+
+        let latest_price_guard = LATEST_PRICE.lock().await;
+        let hour_ms = if let Some(price) = *latest_price_guard {
+            if price < dec!(2500) {
+                10 * 60 * 1000
+            } else {
+                24 * 60 * 60 * 1000
+            }
+        } else {
+            60 * 60 * 1000 * 2
+        };
+        drop(latest_price_guard);
         
         let mut order_manager = ORDER_MANAGER.lock().await;
         

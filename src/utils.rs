@@ -91,6 +91,14 @@ struct ServerTimeResponse {
 }
 
 pub async fn get_server_time() -> Result<i64, Box<dyn std::error::Error>> {
+    if get_env() == PROD_ENV {
+        let local_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        return Ok(local_time);
+    }
+
     let client = reqwest::Client::new();
     let url = format!("{}/fapi/v1/time", get_rest_baseurl());
     let response = client.get(&url).send().await?;
