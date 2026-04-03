@@ -75,21 +75,8 @@ lazy_static! {
     pub static ref RECENT_PRICES: Arc<Mutex<Vec<Decimal>>> = Arc::new(Mutex::new(Vec::new()));
 }
 
-fn calculate_median(gaps: &mut Vec<Decimal>) -> Option<Decimal> {
-    if gaps.is_empty() {
-        return None;
-    }
-    
-    gaps.sort_by(|a, b| b.cmp(a));
-    let len = gaps.len();
-    
-    if len % 2 == 1 {
-        Some(gaps[len / 2])
-    } else {
-        let mid_left = gaps[(len - 1) / 2];
-        let mid_right = gaps[len / 2];
-        Some((mid_left + mid_right) / dec!(2.0))
-    }
+fn calculate_max(gaps: &Vec<Decimal>) -> Option<Decimal> {
+    gaps.iter().max().copied()
 }
 
 fn calculate_price_median(prices: &mut Vec<Decimal>) -> Option<Decimal> {
@@ -768,8 +755,8 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
     
     let mut found_order: Option<(Decimal, Decimal, String)> = None;
     
-    let mut price_gaps = PRICE_GAPS.lock().await;
-    let median_gap = calculate_median(&mut price_gaps);
+    let price_gaps = PRICE_GAPS.lock().await;
+    let max_gap = calculate_max(&price_gaps);
     drop(price_gaps);
     
     for order in &order_manager.orders {
@@ -782,7 +769,7 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
                 }
             };
             
-            let target_price = if let Some(gap) = median_gap {
+            let target_price = if let Some(gap) = max_gap {
                 order.price + gap
             } else {
                 ask_price
@@ -1251,7 +1238,7 @@ async fn check_timeout_sell_orders() {
         let latest_price_guard = LATEST_PRICE.lock().await;
         let hour_ms = if let Some(price) = *latest_price_guard {
             if price < dec!(2500) {
-                10 * 60 * 1000
+                5 * 60 * 1000
             } else {
                 24 * 60 * 60 * 1000
             }
