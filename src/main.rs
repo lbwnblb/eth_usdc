@@ -434,7 +434,7 @@ async fn connect_market_stream() -> Result<(), Box<dyn std::error::Error>> {
                                                 let mut price_gaps_guard = PRICE_GAPS.lock().await;
                                                 price_gaps_guard.push(gap);
                                                 
-                                                if price_gaps_guard.len() > 1000 {
+                                                if price_gaps_guard.len() > 500 {
                                                     price_gaps_guard.remove(0);
                                                 }
                                                 
@@ -447,7 +447,7 @@ async fn connect_market_stream() -> Result<(), Box<dyn std::error::Error>> {
                                         let mut recent_prices_guard = RECENT_PRICES.lock().await;
                                         recent_prices_guard.push(current_price);
                                         
-                                        if recent_prices_guard.len() > 1000 {
+                                        if recent_prices_guard.len() > 500 {
                                             recent_prices_guard.remove(0);
                                         }
                                     }
@@ -1185,7 +1185,7 @@ async fn check_and_cancel_expired_orders(write_arc: Arc<Mutex<WsWriteHalf>>) {
         
         let orders_to_cancel: Vec<(String, String)> = {
             let order_manager = ORDER_MANAGER.lock().await;
-            let ten_seconds_ms = 30 * 1000;
+            let ten_seconds_ms = 1 * 1000;
             
             order_manager
                 .orders
