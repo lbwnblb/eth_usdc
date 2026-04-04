@@ -545,21 +545,23 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
         }
     };
 
-    if symbol == "ETHUSDC" && bid_price > dec!(3000) {
-        info!("交易对是ETHUSDC且最佳买入价格({})超过3000，跳过此次买入", bid_price);
-        return true;
-    }
+    let price_gaps = PRICE_GAPS.lock().await;
+    let max_gap = calculate_max(&price_gaps);
+    drop(price_gaps);
 
-    let mut recent_prices_guard = RECENT_PRICES.lock().await;
-    let mut prices_clone = recent_prices_guard.clone();
-    drop(recent_prices_guard);
-
-    if let Some(median_price) = calculate_price_median(&mut prices_clone) {
-        if bid_price < median_price {
-            // info!("最佳买入价格({})小于中位数价格({})，跳过此次买入", bid_price, median_price);
+    let buy_price = match max_gap {
+        Some(gap) => bid_price - gap,
+        None => {
+            info!("没有价格间距数据，跳过此次买入");
             return true;
         }
-        // info!("最佳买入价格({}) >= 中位数价格({})，继续处理", bid_price, median_price);
+    };
+
+    info!("最优买价: {}, 最大间距: {:?}, 实际买入价格: {}", bid_price, max_gap, buy_price);
+
+    if symbol == "ETHUSDC" && buy_price > dec!(3000) {
+        info!("交易对是ETHUSDC且实际买入价格({})超过3000，跳过此次买入", buy_price);
+        return true;
     }
 
     let timestamp = book_ticker.data.event_time as i64;
@@ -643,7 +645,7 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
     let quantity = match calc_quantity(
         &balance_to_use.to_string(),
         symbol,
-        &bid_price.to_string(),
+        &buy_price.to_string(),
         &symbol_info
     ) {
         Ok(qty) => qty,
@@ -661,15 +663,15 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
         }
     };
 
-    let bid_price_f64 = match bid_price.to_string().parse::<f64>() {
+    let buy_price_f64 = match buy_price.to_string().parse::<f64>() {
         Ok(p) => p,
         Err(e) => {
-            error!("Failed to parse bid price to f64: {}", e);
+            error!("Failed to parse buy price to f64: {}", e);
             return true;
         }
     };
 
-    info!("Calculated order quantity: {} (using {:.2} {}, price: {})", quantity_f64, balance_to_use, balance_name, bid_price);
+    info!("Calculated order quantity: {} (using {:.2} {}, price: {})", quantity_f64, balance_to_use, balance_name, buy_price);
 
     let new_client_order_id = format!("{}_{}_{}", symbol, "BUY", timestamp);
     info!("Generated newClientOrderId: {}", new_client_order_id);
@@ -681,7 +683,7 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
         "BUY",
         "LIMIT",
         quantity_f64,
-        Some(bid_price_f64),
+        Some(buy_price_f64),
         Some("GTX"),
         None,
         Some(&new_client_order_id),
@@ -695,7 +697,7 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
         symbol: symbol.to_string(),
         side: OrderSide::Buy,
         status: OrderStatus::New,
-        price: bid_price,
+        price: buy_price,
         quantity: quantity.clone(),
         filled_quantity: dec!(0.0),
         quote_asset: quote_asset.clone(),
@@ -1183,7 +1185,7 @@ async fn check_and_cancel_expired_orders(write_arc: Arc<Mutex<WsWriteHalf>>) {
         
         let orders_to_cancel: Vec<(String, String)> = {
             let order_manager = ORDER_MANAGER.lock().await;
-            let ten_seconds_ms = 5 * 1000;
+            let ten_seconds_ms = 30 * 1000;
             
             order_manager
                 .orders
@@ -1238,7 +1240,7 @@ async fn check_timeout_sell_orders() {
         let latest_price_guard = LATEST_PRICE.lock().await;
         let hour_ms = if let Some(price) = *latest_price_guard {
             if price < dec!(2500) {
-                30 * 60 * 1000
+                10 * 60 * 1000
             } else {
                 24 * 60 * 60 * 1000
             }
