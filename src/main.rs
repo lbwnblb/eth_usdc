@@ -1183,7 +1183,7 @@ async fn check_and_cancel_expired_orders(write_arc: Arc<Mutex<WsWriteHalf>>) {
         
         let orders_to_cancel: Vec<(String, String)> = {
             let order_manager = ORDER_MANAGER.lock().await;
-            let ten_seconds_ms = 10 * 1000;
+            let ten_seconds_ms = 5 * 1000;
             
             order_manager
                 .orders
