@@ -66,8 +66,8 @@ pub struct GlobalOrderManager {
 lazy_static! {
     pub static ref USDC_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
     pub static ref USDT_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
-    pub static ref USDT_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(30)));
-    pub static ref USDC_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(30)));
+    pub static ref USDT_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(270)));
+    pub static ref USDC_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(270)));
     pub static ref ORDER_MANAGER: Arc<Mutex<GlobalOrderManager>> = Arc::new(Mutex::new(GlobalOrderManager { orders: Vec::new(), total_count: 0, last_buy_order_time: 0, last_sell_order_time: 0 }));
     pub static ref LAST_PRICE: Arc<Mutex<Option<Decimal>>> = Arc::new(Mutex::new(None));
     pub static ref LATEST_PRICE: Arc<Mutex<Option<Decimal>>> = Arc::new(Mutex::new(None));
@@ -621,10 +621,6 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
         return true;
     }
 
-    if available_balance < balance_to_use {
-        info!("可用余额 {} {} 小于买入金额 {} {}，跳过此次买入", available_balance, balance_name, balance_to_use, balance_name);
-        return true;
-    }
 
     let exchange_info = match get_exchange_info().await {
         Ok(info) => info,
