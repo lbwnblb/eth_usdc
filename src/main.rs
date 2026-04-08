@@ -1236,7 +1236,7 @@ async fn check_timeout_sell_orders() {
         let latest_price_guard = LATEST_PRICE.lock().await;
         let hour_ms = if let Some(price) = *latest_price_guard {
             if price < dec!(2500) {
-                60 * 60 * 1000
+                30 * 60 * 1000
             } else {
                 2 * 60 * 60 * 1000
             }
