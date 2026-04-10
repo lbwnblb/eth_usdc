@@ -538,7 +538,7 @@ async fn connect_public_stream(write_arc: Arc<Mutex<WsWriteHalf>>, _api_key: Str
 }
 
 async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticker: &BookTickerStream) -> bool {
-    let timestamp = book_ticker.data.event_time as i64;
+    let mut timestamp = book_ticker.data.event_time as i64;
 
     let order_manager = ORDER_MANAGER.lock().await;
     let fifteen_minutes_ms = 15 * 60 * 1000;
@@ -686,7 +686,8 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
             return true;
         }
     };
-
+    //模型分析需要时间太久所以用新的时间
+    timestamp = get_server_time().await.unwrap_or(timestamp);
     info!("Calculated order quantity: {} (using {:.2} {}, price: {})", quantity_f64, balance_to_use, balance_name, buy_price);
 
     let new_client_order_id = format!("{}_{}_{}", symbol, "BUY", timestamp);
