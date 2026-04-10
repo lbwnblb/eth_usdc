@@ -135,8 +135,8 @@ pub async fn deepseek_kline_analysis(api_key: &str) -> Result<TradeSignal, Signa
                 reasoning_content: None,
             },
         ],
-        temperature: Some(0.0),
-        max_tokens: Some(10),
+        temperature: Some(1.0),
+        max_tokens: None,
         stream: false,
     };
 
