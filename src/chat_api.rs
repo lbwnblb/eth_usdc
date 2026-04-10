@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,15 +122,17 @@ pub async fn deepseek_kline_analysis(api_key: &str) -> Result<TradeSignal, Signa
     let req = ChatRequest {
         base_url: "https://api.deepseek.com".to_string(),
         api_key: api_key.to_string(),
-        model: "deepseek-chat".to_string(),
+        model: "deepseek-reasoner".to_string(),
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),
                 content: system_prompt,
+                reasoning_content: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: user_prompt,
+                reasoning_content: None,
             },
         ],
         temperature: Some(0.0),
@@ -140,10 +144,16 @@ pub async fn deepseek_kline_analysis(api_key: &str) -> Result<TradeSignal, Signa
         .await
         .map_err(SignalError::ChatError)?;
 
-    let content = response
+    let first_choice = response
         .choices
         .first()
-        .ok_or_else(|| SignalError::InvalidSignal("No choices in response".into()))?
+        .ok_or_else(|| SignalError::InvalidSignal("No choices in response".into()))?;
+
+    if let Some(reasoning) = &first_choice.message.reasoning_content {
+        println!("=== DeepSeek 思考过程 ===\n{}\n=== 思考过程结束 ===", reasoning);
+    }
+
+    let content = first_choice
         .message
         .content
         .trim()
@@ -238,10 +248,12 @@ mod tests {
                 ChatMessage {
                     role: "system".to_string(),
                     content: "You are a helpful assistant.".to_string(),
+                    reasoning_content: None,
                 },
                 ChatMessage {
                     role: "user".to_string(),
                     content: "Hello!".to_string(),
+                    reasoning_content: None,
                 },
             ],
             temperature: None,
