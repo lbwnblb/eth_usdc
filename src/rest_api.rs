@@ -212,6 +212,15 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn get_server_time(){
+        let client = get_http_client();
+        let url = format!("{}", get_rest_baseurl());
+        let response = client.get(&url).send().await.unwrap();
+
+        println!("{:#?}", response);
+
+    }
+    #[tokio::test]
     async fn test_get_klines() {
         let req = KlineRequest {
             symbol: "ETHUSDC".to_string(),

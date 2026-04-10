@@ -37,13 +37,14 @@ static REST_BASEURL: OnceLock<String> = OnceLock::new();
 
 pub fn get_rest_baseurl() -> &'static str {
     REST_BASEURL.get_or_init(|| {
-        if get_env() == TEST_ENV || get_env() == DEV_ENV {
-            "https://demo-fapi.binance.com".to_string()
-        } else if get_env() == PROD_ENV {
+        //测试用不了暂时
+        // if get_env() == TEST_ENV || get_env() == DEV_ENV {
+        //     "https://demo-fapi.binance.com".to_string()
+        // } else if get_env() == PROD_ENV {
             "https://fapi.binance.com".to_string()
-        } else {
-            "".to_string()
-        }
+        // } else {
+        //     "".to_string()
+        // }
     })
 }
 

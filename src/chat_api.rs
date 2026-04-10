@@ -222,7 +222,7 @@ mod tests {
     async fn test_deepseek_kline_analysis() {
         let api_key = std::env::var("DEEPSEEK_API_KEY")
             .expect("DEEPSEEK_API_KEY environment variable not set");
-        deepseek_kline_analysis(api_key.as_str()).await.unwrap();
+        println!("{:?}", deepseek_kline_analysis(api_key.as_str()).await.unwrap());
     }
 
     #[tokio::test]
