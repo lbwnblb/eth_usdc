@@ -62,6 +62,7 @@ pub struct GlobalOrderManager {
     pub total_count: usize,
     pub last_buy_order_time: u64,
     pub last_sell_order_time: u64,
+    pub last_skip_time: u64,
 }
 
 lazy_static! {
@@ -69,7 +70,7 @@ lazy_static! {
     pub static ref USDT_AVAILABLE_BALANCE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(0.0)));
     pub static ref USDT_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(270)));
     pub static ref USDC_TO_USE: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(270)));
-    pub static ref ORDER_MANAGER: Arc<Mutex<GlobalOrderManager>> = Arc::new(Mutex::new(GlobalOrderManager { orders: Vec::new(), total_count: 0, last_buy_order_time: 0, last_sell_order_time: 0 }));
+    pub static ref ORDER_MANAGER: Arc<Mutex<GlobalOrderManager>> = Arc::new(Mutex::new(GlobalOrderManager { orders: Vec::new(), total_count: 0, last_buy_order_time: 0, last_sell_order_time: 0, last_skip_time: 0 }));
     pub static ref LAST_PRICE: Arc<Mutex<Option<Decimal>>> = Arc::new(Mutex::new(None));
     pub static ref LATEST_PRICE: Arc<Mutex<Option<Decimal>>> = Arc::new(Mutex::new(None));
     pub static ref PRICE_GAPS: Arc<Mutex<Vec<Decimal>>> = Arc::new(Mutex::new(Vec::new()));
@@ -537,9 +538,47 @@ async fn connect_public_stream(write_arc: Arc<Mutex<WsWriteHalf>>, _api_key: Str
 }
 
 async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticker: &BookTickerStream) -> bool {
-    // info!("Preparing to place order...");
+    let timestamp = book_ticker.data.event_time as i64;
 
-    let bid_price = match Decimal::from_str(&book_ticker.data.best_bid_price) {
+    let order_manager = ORDER_MANAGER.lock().await;
+    let fifteen_minutes_ms = 15 * 60 * 1000;
+    if (timestamp as u64) - order_manager.last_skip_time < fifteen_minutes_ms {
+        info!("距离上次跳过买入还不到15分钟，继续等待...");
+        return true;
+    }
+    if order_manager.total_count >= 1 {
+        return true;
+    }
+    drop(order_manager);
+
+    let deepseek_api_key = crate::utils::get_deepseek_api_key();
+    if deepseek_api_key.is_empty() {
+        error!("未设置DEEPSEEK_API_KEY环境变量");
+        return true;
+    }
+
+    info!("正在调用DeepSeek模型分析K线数据...");
+    match crate::chat_api::deepseek_kline_analysis(&deepseek_api_key).await {
+        Ok(crate::chat_api::TradeSignal::Buy) => {
+            info!("模型返回买入信号，继续执行买入");
+        }
+        Ok(crate::chat_api::TradeSignal::Sell) => {
+            info!("模型返回卖出信号，跳过此次买入");
+            let mut order_manager = ORDER_MANAGER.lock().await;
+            order_manager.last_skip_time = timestamp as u64;
+            drop(order_manager);
+            return true;
+        }
+        Err(e) => {
+            error!("模型调用失败: {}, 跳过此次买入", e);
+            let mut order_manager = ORDER_MANAGER.lock().await;
+            order_manager.last_skip_time = timestamp as u64;
+            drop(order_manager);
+            return true;
+        }
+    }
+
+    let buy_price = match Decimal::from_str(&book_ticker.data.best_bid_price) {
         Ok(p) => p,
         Err(e) => {
             error!("Failed to parse bid price: {}", e);
@@ -547,33 +586,12 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
         }
     };
 
-    let price_gaps = PRICE_GAPS.lock().await;
-    let max_gap = calculate_max(&price_gaps);
-    drop(price_gaps);
-
-    let buy_price = match max_gap {
-        Some(gap) => bid_price - gap,
-        None => {
-            info!("没有价格间距数据，跳过此次买入");
-            return true;
-        }
-    };
-
-    info!("最优买价: {}, 最大间距: {:?}, 实际买入价格: {}", bid_price, max_gap, buy_price);
+    info!("最优买价: {}, 直接使用最优买价买入", buy_price);
 
     if symbol == "ETHUSDC" && buy_price > dec!(3000) {
         info!("交易对是ETHUSDC且实际买入价格({})超过3000，跳过此次买入", buy_price);
         return true;
     }
-
-    let timestamp = book_ticker.data.event_time as i64;
-
-    let order_manager = ORDER_MANAGER.lock().await;
-    if order_manager.total_count >= 1 {
-        // info!("跳过此次买入请求，当前总仓位: {}", order_manager.total_count);
-        return true;
-    }
-    drop(order_manager);
 
     let quote_asset = if symbol.ends_with("USDC") {
         QuoteAsset::USDC
@@ -756,9 +774,9 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
     let mut found_order: Option<(Decimal, Decimal, String)> = None;
     
     let price_gaps = PRICE_GAPS.lock().await;
-    let max_gap = calculate_max(&price_gaps);
+    let max_gap: Option<Decimal> = calculate_max(&price_gaps).map(|g| g * Decimal::from(10));
     drop(price_gaps);
-    
+
     for order in &order_manager.orders {
         if order.status == OrderStatus::Filled && order.side == OrderSide::Buy {
             let ask_price = match Decimal::from_str(&book_ticker.data.best_ask_price) {
@@ -1183,7 +1201,7 @@ async fn check_and_cancel_expired_orders(write_arc: Arc<Mutex<WsWriteHalf>>) {
         
         let orders_to_cancel: Vec<(String, String)> = {
             let order_manager = ORDER_MANAGER.lock().await;
-            let ten_seconds_ms = 1 * 1000;
+            let ten_seconds_ms = 60 * 1000;
             
             order_manager
                 .orders
@@ -1238,7 +1256,7 @@ async fn check_timeout_sell_orders() {
         let latest_price_guard = LATEST_PRICE.lock().await;
         let hour_ms = if let Some(price) = *latest_price_guard {
             if price < dec!(2500) {
-                30 * 60 * 1000
+                15 * 60 * 1000
             } else {
                 2 * 60 * 60 * 1000
             }

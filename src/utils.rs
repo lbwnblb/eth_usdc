@@ -4,6 +4,7 @@ use rust_decimal::Decimal;
 
 static ENV: OnceLock<String> = OnceLock::new();
 static SYMBOL: OnceLock<String> = OnceLock::new();
+static DEEPSEEK_API_KEY: OnceLock<String> = OnceLock::new();
 
 pub const TEST_ENV: &str = "test";
 pub const DEV_ENV: &str = "dev";
@@ -20,6 +21,12 @@ pub fn get_env() -> &'static str {
 pub fn get_symbol() -> &'static str {
     SYMBOL.get_or_init(|| {
         "ETHUSDC".to_string()
+    })
+}
+
+pub fn get_deepseek_api_key() -> &'static str {
+    DEEPSEEK_API_KEY.get_or_init(|| {
+        std::env::var("DEEPSEEK_API_KEY").unwrap_or_else(|_| String::new())
     })
 }
 

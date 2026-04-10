@@ -102,22 +102,22 @@ pub async fn deepseek_kline_analysis(api_key: &str) -> Result<TradeSignal, Signa
         .await
         .map_err(|e| SignalError::KlineError(e.to_string()))?;
 
-    let mut kline_text = String::new();
+    let mut kline_text = String::from("时间,开,高,低,收,量,额\n");
     for k in &klines {
         kline_text.push_str(&format!(
-            "时间:{}, 开:{}, 高:{}, 低:{}, 收:{}, 量:{}, 引用量:{}\n",
+            "{},{},{},{},{},{},{}\n",
             k.open_time, k.open, k.high, k.low, k.close, k.volume, k.quote_volume
         ));
     }
-
     let system_prompt = format!(
-        "你是一个专业的加密货币K线数据分析专家。你将收到{}交易对最近96条15分钟K线数据。\
-        请基于技术分析（包括趋势、支撑阻力、成交量、价格形态等）判断当前市场走势。\
-        你只能回复一个字：买 或 卖。不要回复任何其他内容，不要解释原因，只回复买或卖。",
+        "你是{}交易信号生成器。分析K线数据后，在回复中只写一个字：买 或 卖。禁止输出其他任何内容。",
         symbol
     );
 
-    let user_prompt = format!("以下是{}最近96条15分钟K线数据：\n\n{}", symbol, kline_text);
+    let user_prompt = format!(
+        "基于以下15分钟K线数据，输出交易信号（仅回复\"买\"或\"卖\"）：\n\n{}",
+        kline_text
+    );
 
     let req = ChatRequest {
         base_url: "https://api.deepseek.com".to_string(),
@@ -150,7 +150,7 @@ pub async fn deepseek_kline_analysis(api_key: &str) -> Result<TradeSignal, Signa
         .ok_or_else(|| SignalError::InvalidSignal("No choices in response".into()))?;
 
     if let Some(reasoning) = &first_choice.message.reasoning_content {
-        println!("=== DeepSeek 思考过程 ===\n{}\n=== 思考过程结束 ===", reasoning);
+        crate::info!("=== DeepSeek 思考过程 ===\n{}\n=== 思考过程结束 ===", reasoning);
     }
 
     let choice = response.choices.first()
