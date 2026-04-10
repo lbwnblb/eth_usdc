@@ -543,7 +543,7 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
     let order_manager = ORDER_MANAGER.lock().await;
     let fifteen_minutes_ms = 15 * 60 * 1000;
     if (timestamp as u64) - order_manager.last_skip_time < fifteen_minutes_ms {
-        info!("距离上次跳过买入还不到15分钟，继续等待...");
+        // info!("距离上次跳过买入还不到15分钟，继续等待...");
         return true;
     }
     if order_manager.total_count >= 1 {
