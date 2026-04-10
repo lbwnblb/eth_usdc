@@ -23,6 +23,12 @@ pub fn get_symbol() -> &'static str {
     })
 }
 
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+pub fn get_http_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(reqwest::Client::new)
+}
+
 static REST_BASEURL: OnceLock<String> = OnceLock::new();
 
 pub fn get_rest_baseurl() -> &'static str {
@@ -99,7 +105,7 @@ pub async fn get_server_time() -> Result<i64, Box<dyn std::error::Error>> {
         return Ok(local_time);
     }
 
-    let client = reqwest::Client::new();
+    let client = get_http_client();
     let url = format!("{}/fapi/v1/time", get_rest_baseurl());
     let response = client.get(&url).send().await?;
 
@@ -228,7 +234,7 @@ pub async fn get_exchange_info() -> Result<ExchangeInfo, Box<dyn std::error::Err
         }
     }
 
-    let client = reqwest::Client::new();
+    let client = get_http_client();
     let url = format!("{}/fapi/v1/exchangeInfo", get_rest_baseurl());
     let response = client.get(&url).send().await?;
 

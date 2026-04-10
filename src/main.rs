@@ -1,3 +1,4 @@
+
 use futures_util::{SinkExt, StreamExt};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -95,7 +96,8 @@ fn calculate_price_median(prices: &mut Vec<Decimal>) -> Option<Decimal> {
         Some((mid_left + mid_right) / dec!(2.0))
     }
 }
-
+mod rest_api;
+mod chat_api;
 mod ed25519;
 mod utils;
 mod logger;
