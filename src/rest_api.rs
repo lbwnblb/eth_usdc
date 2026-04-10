@@ -91,6 +91,107 @@ impl std::fmt::Display for KlineError {
 
 impl std::error::Error for KlineError {}
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BookTicker {
+    pub symbol: String,
+    #[serde(rename = "bidPrice")]
+    pub bid_price: Decimal,
+    #[serde(rename = "bidQty")]
+    pub bid_qty: Decimal,
+    #[serde(rename = "askPrice")]
+    pub ask_price: Decimal,
+    #[serde(rename = "askQty")]
+    pub ask_qty: Decimal,
+    pub time: i64,
+}
+
+#[derive(Debug)]
+pub enum BookTickerError {
+    RequestFailed(String),
+    ParseFailed(String),
+}
+
+impl std::fmt::Display for BookTickerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BookTickerError::RequestFailed(msg) => write!(f, "RequestFailed: {}", msg),
+            BookTickerError::ParseFailed(msg) => write!(f, "ParseFailed: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for BookTickerError {}
+
+pub struct BookTickerRequest {
+    pub symbol: Option<String>,
+}
+
+pub async fn get_book_ticker(
+    req: BookTickerRequest,
+) -> Result<Vec<BookTicker>, BookTickerError> {
+    let mut params: Vec<(String, String)> = Vec::new();
+
+    if let Some(symbol) = req.symbol {
+        params.push(("symbol".to_string(), symbol));
+    }
+
+    let url = format!("{}/fapi/v1/ticker/bookTicker", get_rest_baseurl());
+
+    let client = get_http_client();
+    let response = client
+        .get(&url)
+        .query(&params)
+        .send()
+        .await
+        .map_err(|e| BookTickerError::RequestFailed(e.to_string()))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<empty>".to_string());
+        return Err(BookTickerError::RequestFailed(format!(
+            "API request failed with status {}: {}",
+            status, body
+        )));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|e| BookTickerError::RequestFailed(e.to_string()))?;
+
+    if body.is_empty() {
+        return Err(BookTickerError::ParseFailed(
+            "API returned empty response".into(),
+        ));
+    }
+
+    let raw: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| BookTickerError::ParseFailed(e.to_string()))?;
+
+    let tickers: Vec<BookTicker> = match raw {
+        serde_json::Value::Array(arr) => arr
+            .into_iter()
+            .map(|v| serde_json::from_value(v))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BookTickerError::ParseFailed(e.to_string()))?,
+        serde_json::Value::Object(_) => {
+            let ticker: BookTicker = serde_json::from_value(raw)
+                .map_err(|e| BookTickerError::ParseFailed(e.to_string()))?;
+            vec![ticker]
+        }
+        _ => {
+            return Err(BookTickerError::ParseFailed(
+                "Unexpected response format".into(),
+            ))
+        }
+    };
+
+    Ok(tickers)
+}
+
 pub struct KlineRequest {
     pub symbol: String,
     pub interval: KlineInterval,
@@ -241,6 +342,25 @@ mod tests {
         println!(
             "open_time={}, open={}, high={}, low={}, close={}, volume={}",
             first.open_time, first.open, first.high, first.low, first.close, first.volume
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_book_ticker() {
+        let req = BookTickerRequest {
+            symbol: Some("ETHUSDC".to_string()),
+        };
+
+        let result = get_book_ticker(req).await;
+        assert!(result.is_ok(), "get_book_ticker failed: {:?}", result);
+
+        let tickers = result.unwrap();
+        assert!(!tickers.is_empty(), "tickers should not be empty");
+
+        let first = &tickers[0];
+        println!(
+            "symbol={}, bid_price={}, bid_qty={}, ask_price={}, ask_qty={}, time={}",
+            first.symbol, first.bid_price, first.bid_qty, first.ask_price, first.ask_qty, first.time
         );
     }
 }

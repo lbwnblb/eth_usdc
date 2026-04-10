@@ -13,6 +13,7 @@ use rust_decimal_macros::dec;
 use crate::logger::init_logger;
 use crate::utils::{calc_quantity, get_exchange_info, get_server_time};
 use crate::ws_api::{login, parse_login_response, is_login_success, check_response_id, create_user_data_stream_request, parse_user_data_stream_response, create_ping_user_data_stream_request, parse_ping_response, create_market_subscribe_request, create_account_balance_request, parse_account_balance_response, parse_book_ticker, create_order_request, create_cancel_order_request, parse_user_data_stream, UserDataStreamEvent, parse_generic_response, BookTickerStream, OrderTradeUpdateStream, TradeLiteStream, parse_agg_trade};
+use crate::rest_api::{get_book_ticker, BookTickerRequest};
 use crate::ed25519::{get_api_key, get_private_key};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -679,16 +680,33 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
         }
     };
 
-    let buy_price_f64 = match buy_price.to_string().parse::<f64>() {
+    let latest_buy_price = match get_book_ticker(BookTickerRequest {
+        symbol: Some(symbol.to_string()),
+    }).await {
+        Ok(tickers) => {
+            if let Some(ticker) = tickers.first() {
+                info!("HTTP获取最新最优买价: {} (原WebSocket买价: {})", ticker.bid_price, buy_price);
+                ticker.bid_price
+            } else {
+                error!("HTTP获取bookTicker返回空列表，使用原WebSocket买价: {}", buy_price);
+                buy_price
+            }
+        }
+        Err(e) => {
+            error!("HTTP获取bookTicker失败: {}，使用原WebSocket买价: {}", e, buy_price);
+            buy_price
+        }
+    };
+
+    let buy_price_f64 = match latest_buy_price.to_string().parse::<f64>() {
         Ok(p) => p,
         Err(e) => {
             error!("Failed to parse buy price to f64: {}", e);
             return true;
         }
     };
-    //模型分析需要时间太久所以用新的时间
     timestamp = get_server_time().await.unwrap_or(timestamp);
-    info!("Calculated order quantity: {} (using {:.2} {}, price: {})", quantity_f64, balance_to_use, balance_name, buy_price);
+    info!("Calculated order quantity: {} (using {:.2} {}, price: {})", quantity_f64, balance_to_use, balance_name, latest_buy_price);
 
     let new_client_order_id = format!("{}_{}_{}", symbol, "BUY", timestamp);
     info!("Generated newClientOrderId: {}", new_client_order_id);
@@ -714,7 +732,7 @@ async fn order_buy(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_ticke
         symbol: symbol.to_string(),
         side: OrderSide::Buy,
         status: OrderStatus::New,
-        price: buy_price,
+        price: latest_buy_price,
         quantity: quantity.clone(),
         filled_quantity: dec!(0.0),
         quote_asset: quote_asset.clone(),
@@ -775,7 +793,7 @@ async fn order_sell(write_arc: &Arc<Mutex<WsWriteHalf>>, symbol: &str, book_tick
     let mut found_order: Option<(Decimal, Decimal, String)> = None;
     
     let price_gaps = PRICE_GAPS.lock().await;
-    let max_gap: Option<Decimal> = calculate_max(&price_gaps).map(|g| g * Decimal::from(10));
+    let max_gap: Option<Decimal> = calculate_max(&price_gaps).map(|g| g * Decimal::from(50));
     drop(price_gaps);
 
     for order in &order_manager.orders {
