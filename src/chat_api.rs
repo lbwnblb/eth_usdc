@@ -153,19 +153,30 @@ pub async fn deepseek_kline_analysis(api_key: &str) -> Result<TradeSignal, Signa
         println!("=== DeepSeek 思考过程 ===\n{}\n=== 思考过程结束 ===", reasoning);
     }
 
-    let content = first_choice
-        .message
-        .content
-        .trim()
-        .to_string();
+    let choice = response.choices.first()
+        .ok_or_else(|| SignalError::InvalidSignal("No choices".into()))?;
 
-    match content.as_str() {
-        "买" => Ok(TradeSignal::Buy),
-        "卖" => Ok(TradeSignal::Sell),
-        _ => Err(SignalError::InvalidSignal(format!(
+    let content = {
+        let c = choice.message.content.trim();
+        if c.is_empty() {
+            choice.message.reasoning_content
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+        } else {
+            c
+        }
+    };
+
+    if content.contains("买") {
+        Ok(TradeSignal::Buy)
+    } else if content.contains("卖") {
+        Ok(TradeSignal::Sell)
+    } else {
+        Err(SignalError::InvalidSignal(format!(
             "模型返回了无效信号: '{}', 期望 '买' 或 '卖'",
             content
-        ))),
+        )))
     }
 }
 
@@ -232,7 +243,7 @@ mod tests {
     async fn test_deepseek_kline_analysis() {
         let api_key = std::env::var("DEEPSEEK_API_KEY")
             .expect("DEEPSEEK_API_KEY environment variable not set");
-        println!("{:?}", deepseek_kline_analysis(api_key.as_str()).await.unwrap());
+        println!("{:?}", deepseek_kline_analysis(api_key.as_str()).await);
     }
 
     #[tokio::test]
