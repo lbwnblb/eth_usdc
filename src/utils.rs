@@ -26,7 +26,11 @@ pub fn get_symbol() -> &'static str {
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 pub fn get_http_client() -> &'static reqwest::Client {
-    HTTP_CLIENT.get_or_init(reqwest::Client::new)
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .build()
+            .expect("Failed to build HTTP client")
+    })
 }
 
 static REST_BASEURL: OnceLock<String> = OnceLock::new();
